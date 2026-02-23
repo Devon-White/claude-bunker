@@ -1,0 +1,20 @@
+# Test config files (users create these in their own projects)
+.claude-bunker.json
+
+# Environment files — never commit secrets
+.devcontainer/.env*
+.env
+.env.*
+
+# Claude Code local config
+.claude/
+
+# Serena cache/state
+.serena/
+
+# Node
+node_modules/
+
+# OS junk
+.DS_Store
+Thumbs.db
