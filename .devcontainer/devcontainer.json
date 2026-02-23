@@ -4,14 +4,14 @@
     "dockerfile": "Dockerfile",
     "args": {
       "TZ": "${localEnv:TZ:America/Los_Angeles}",
-      "CLAUDE_CODE_VERSION": "latest",
       "GIT_DELTA_VERSION": "0.18.2",
       "ZSH_IN_DOCKER_VERSION": "1.2.0"
     }
   },
   "runArgs": [
     "--cap-add=NET_ADMIN",
-    "--cap-add=NET_RAW"
+    "--cap-add=NET_RAW",
+    "--security-opt=apparmor=unconfined"
   ],
   "customizations": {
     "vscode": {
@@ -32,6 +32,6 @@
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
-  "postStartCommand": "echo \"${CLAUDE_BUNKER_EXTRA_DOMAINS:-}\" > /tmp/.bunker-extra-domains && sudo /usr/local/bin/init-firewall.sh && /usr/local/bin/inject-sandbox-defaults.sh",
+  "postStartCommand": "git config --global --add safe.directory /workspace && echo \"${CLAUDE_BUNKER_EXTRA_DOMAINS:-}\" > /tmp/.bunker-extra-domains && sudo /usr/local/bin/init-firewall.sh",
   "waitFor": "postStartCommand"
 }

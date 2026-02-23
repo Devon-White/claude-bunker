@@ -81,21 +81,13 @@ is_msys() {
     [[ "${OSTYPE:-}" == msys* ]] || [[ "${MSYSTEM:-}" != "" ]]
 }
 
-# Convert MSYS2 paths (/c/Users/...) to Windows paths (C:/Users/...) so native
-# Windows programs (devcontainer CLI, docker) don't get double-mangled.
-to_native_path() {
-    if is_msys; then
-        cygpath -m "$1" 2>/dev/null || echo "$1"
-    else
-        echo "$1"
-    fi
-}
-
 docker_exec_it() {
     # MSYS_NO_PATHCONV prevents Git Bash from mangling container paths
     # (e.g., -w /workspace → -w C:\workspace which breaks docker exec)
     if is_msys; then
-        if has_cmd winpty; then
+        # VS Code provides its own PTY (conpty) — winpty would double-wrap
+        # and garble arguments. Only use winpty in standalone terminals (mintty).
+        if has_cmd winpty && [ "${TERM_PROGRAM:-}" != "vscode" ]; then
             MSYS_NO_PATHCONV=1 winpty docker exec -it "$@"
         else
             MSYS_NO_PATHCONV=1 docker exec -it "$@"
@@ -132,27 +124,41 @@ read_project_config() {
     BUNKER_ALLOW_DOMAINS=$(echo "$parsed" | sed -n '3p')
 }
 
-has_config_overrides() {
-    [ -n "$BUNKER_WORKSPACE" ] || [ "$BUNKER_EXCLUDE" != "[]" ] || [ -n "$BUNKER_ALLOW_DOMAINS" ]
-}
-
 generate_config() {
-    local tmp_config
-    tmp_config=$(mktemp "${TMPDIR:-/tmp}/claude-bunker-XXXXXX.json")
+    local tmp_dir
+    tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/claude-bunker-XXXXXX")
+    local tmp_config="$tmp_dir/devcontainer.json"
 
     BASE_JSON=$(cat "$DEVCONTAINER_DIR/devcontainer.json") \
     BUILD_CONTEXT="$DEVCONTAINER_DIR" \
+    CONTAINER_ID="$CONTAINER_NAME" \
     WS_SUB="$BUNKER_WORKSPACE" \
     EXCLUDES="$BUNKER_EXCLUDE" \
     DOMAINS="$BUNKER_ALLOW_DOMAINS" \
     node -e '
         const config = JSON.parse(process.env.BASE_JSON);
 
-        // The generated config lives in /tmp, so the Dockerfile path would
-        // resolve to /tmp/Dockerfile.  Fix by setting an absolute build context
-        // back to the real .devcontainer/ directory.
+        // The generated config lives in /tmp, so relative paths would resolve
+        // there instead of .devcontainer/. Fix by making both absolute.
+        const ctx = process.env.BUILD_CONTEXT;
         config.build = config.build || {};
-        config.build.context = process.env.BUILD_CONTEXT;
+        config.build.context = ctx;
+        const df = config.build.dockerfile || "Dockerfile";
+        config.build.dockerfile = ctx + "/" + df.replace(/^\.\//, "");
+
+        // Normalize volume names to use CONTAINER_NAME instead of ${devcontainerId}.
+        // devcontainerId is a hash of the workspace path, which differs across
+        // Git Bash, WSL, and VS Code — causing separate volumes (and repeated
+        // logins) for the same project. CONTAINER_NAME is derived from the
+        // directory basename, which is consistent everywhere.
+        const cid = process.env.CONTAINER_ID;
+        if (cid && config.mounts) {
+            config.mounts = config.mounts.map(m =>
+                typeof m === "string"
+                    ? m.replace(/\$\{devcontainerId\}/g, cid)
+                    : m
+            );
+        }
 
         const sub = process.env.WS_SUB || "";
         if (sub && sub !== ".") {
@@ -164,23 +170,59 @@ generate_config() {
             config.mounts = config.mounts || [];
             config.mounts.push("type=tmpfs,destination=/workspace/" + clean);
         }
+        // Isolate /workspace/.claude so writes never reach the bind-mounted host dir
+        config.mounts = config.mounts || [];
+        config.mounts.push("type=tmpfs,destination=/workspace/.claude");
+
         const domains = process.env.DOMAINS || "";
         if (domains) {
             config.containerEnv = config.containerEnv || {};
             config.containerEnv.CLAUDE_BUNKER_EXTRA_DOMAINS = domains;
         }
         process.stdout.write(JSON.stringify(config, null, 2) + "\n");
-    ' > "$tmp_config" || { rm -f "$tmp_config"; die "Failed to generate config"; }
+    ' > "$tmp_config" || { rm -rf "$tmp_dir"; die "Failed to generate config"; }
 
     echo "$tmp_config"
 }
 
 effective_workdir() {
+    local dir="/workspace"
     if [ -n "$BUNKER_WORKSPACE" ] && [ "$BUNKER_WORKSPACE" != "." ]; then
-        echo "/workspace/$(echo "$BUNKER_WORKSPACE" | sed 's|^\./||')"
-    else
-        echo "/workspace"
+        dir="/workspace/$(echo "$BUNKER_WORKSPACE" | sed 's|^\./||')"
     fi
+    # Double leading slash prevents MSYS2 from mangling the container path.
+    # Linux/Docker treats //workspace identically to /workspace.
+    if is_msys; then echo "/$dir"; else echo "$dir"; fi
+}
+
+# ---------------------------------------------------------------------------
+# Seed .claude settings into the container's isolated tmpfs
+# ---------------------------------------------------------------------------
+seed_claude_settings() {
+    local cname="$1"
+    local host_claude_dir="$WORKSPACE/.claude"
+
+    # Copy host's .claude/*.json into the container's tmpfs overlay
+    if [ -d "$host_claude_dir" ]; then
+        for f in "$host_claude_dir"/*.json; do
+            [ -f "$f" ] || continue
+            local basename
+            basename=$(basename "$f")
+            # docker cp needs MSYS2-safe paths — $f is already native from
+            # WORKSPACE conversion above; container path needs // prefix on MSYS2
+            local dest
+            if is_msys; then
+                dest="$cname://workspace/.claude/$basename"
+            else
+                dest="$cname:/workspace/.claude/$basename"
+            fi
+            docker cp "$f" "$dest" 2>/dev/null || true
+        done
+    fi
+
+    # Layer sandbox defaults on top (creates settings.json if missing)
+    # MSYS_NO_PATHCONV prevents Git Bash from mangling the container path
+    MSYS_NO_PATHCONV=1 docker exec -u node "$cname" /usr/local/bin/inject-sandbox-defaults.sh 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -236,12 +278,11 @@ ensure_container() {
 
     _STARTED_BY_US=true
 
-    # Generate config with overrides if .claude-bunker.json has any
-    local config_file="$DEVCONTAINER_DIR/devcontainer.json"
-    if has_config_overrides; then
-        _TMP_CONFIG=$(generate_config)
-        config_file="$_TMP_CONFIG"
-    fi
+    # Always generate config to normalize volume names across terminal types
+    # (Git Bash, WSL, VS Code all produce different workspace paths, which
+    # devcontainerId hashes differently — causing separate volumes per terminal).
+    _TMP_CONFIG=$(generate_config)
+    local config_file="$_TMP_CONFIG"
 
     # Decide UX: first build (verbose) vs quick start (quiet)
     if fingerprint_matches; then
@@ -278,8 +319,8 @@ cleanup() {
     set +e  # Don't exit on errors during cleanup
     trap - EXIT INT TERM HUP
 
-    # Clean up temp config file
-    [ -n "${_TMP_CONFIG:-}" ] && rm -f "$_TMP_CONFIG"
+    # Clean up temp config directory
+    [ -n "${_TMP_CONFIG:-}" ] && rm -rf "$(dirname "$_TMP_CONFIG")"
 
     local cname
     cname=$(resolve_container 2>/dev/null) || return
@@ -321,6 +362,8 @@ cmd_default() {
         die "Container exited unexpectedly after startup."
     fi
 
+    seed_claude_settings "$cname"
+
     # Verify claude is installed in the container
     if ! docker exec "$cname" which claude >/dev/null 2>&1; then
         die "Claude CLI not found in container."
@@ -349,6 +392,8 @@ cmd_shell() {
     cname=$(resolve_container)
     local workdir
     workdir=$(effective_workdir)
+
+    seed_claude_settings "$cname"
 
     info "Opening shell..."
     docker_exec_it -u node -w "$workdir" "$cname" zsh
