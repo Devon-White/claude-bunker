@@ -31,6 +31,13 @@ CLAUDE_BUNKER_DIR="${CLAUDE_BUNKER_DIR:-$(resolve_script_dir)}"
 DEVCONTAINER_DIR="$CLAUDE_BUNKER_DIR/.devcontainer"
 WORKSPACE="${CLAUDE_BUNKER_WS:-$(pwd)}"
 
+# Convert to native paths on MSYS2/Git Bash so devcontainer CLI and Docker
+# receive proper Windows paths instead of /c/Users/... which gets double-mangled.
+if [[ "${OSTYPE:-}" == msys* ]] || [[ "${MSYSTEM:-}" != "" ]]; then
+    WORKSPACE="$(cygpath -m "$WORKSPACE" 2>/dev/null || echo "$WORKSPACE")"
+    DEVCONTAINER_DIR="$(cygpath -m "$DEVCONTAINER_DIR" 2>/dev/null || echo "$DEVCONTAINER_DIR")"
+fi
+
 # Unique container name per workspace directory
 CONTAINER_NAME="claude-bunker-$(basename "$WORKSPACE" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]-' '-' | sed 's/^-//;s/-$//')"
 
@@ -70,6 +77,34 @@ container_running() {
     docker ps --filter "label=claude-bunker=${CONTAINER_NAME}" --format '{{.Names}}' | grep -q .
 }
 
+is_msys() {
+    [[ "${OSTYPE:-}" == msys* ]] || [[ "${MSYSTEM:-}" != "" ]]
+}
+
+# Convert MSYS2 paths (/c/Users/...) to Windows paths (C:/Users/...) so native
+# Windows programs (devcontainer CLI, docker) don't get double-mangled.
+to_native_path() {
+    if is_msys; then
+        cygpath -m "$1" 2>/dev/null || echo "$1"
+    else
+        echo "$1"
+    fi
+}
+
+docker_exec_it() {
+    # MSYS_NO_PATHCONV prevents Git Bash from mangling container paths
+    # (e.g., -w /workspace → -w C:\workspace which breaks docker exec)
+    if is_msys; then
+        if has_cmd winpty; then
+            MSYS_NO_PATHCONV=1 winpty docker exec -it "$@"
+        else
+            MSYS_NO_PATHCONV=1 docker exec -it "$@"
+        fi
+    else
+        docker exec -it "$@"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Project config (.claude-bunker.json)
 # ---------------------------------------------------------------------------
@@ -106,11 +141,19 @@ generate_config() {
     tmp_config=$(mktemp "${TMPDIR:-/tmp}/claude-bunker-XXXXXX.json")
 
     BASE_JSON=$(cat "$DEVCONTAINER_DIR/devcontainer.json") \
+    BUILD_CONTEXT="$DEVCONTAINER_DIR" \
     WS_SUB="$BUNKER_WORKSPACE" \
     EXCLUDES="$BUNKER_EXCLUDE" \
     DOMAINS="$BUNKER_ALLOW_DOMAINS" \
     node -e '
         const config = JSON.parse(process.env.BASE_JSON);
+
+        // The generated config lives in /tmp, so the Dockerfile path would
+        // resolve to /tmp/Dockerfile.  Fix by setting an absolute build context
+        // back to the real .devcontainer/ directory.
+        config.build = config.build || {};
+        config.build.context = process.env.BUILD_CONTEXT;
+
         const sub = process.env.WS_SUB || "";
         if (sub && sub !== ".") {
             config.workspaceFolder = "/workspace/" + sub.replace(/^\.\//, "");
@@ -144,7 +187,9 @@ effective_workdir() {
 # Config fingerprinting — detect when a rebuild is needed
 # ---------------------------------------------------------------------------
 config_fingerprint() {
-    cat "$DEVCONTAINER_DIR"/* "$BUNKER_CONFIG" 2>/dev/null | \
+    # cat returns non-zero if BUNKER_CONFIG doesn't exist (most projects).
+    # Without || true, set -o pipefail would kill the script silently.
+    { cat "$DEVCONTAINER_DIR"/* "$BUNKER_CONFIG" 2>/dev/null || true; } | \
     node -e "
         const c = require('crypto'); let d = '';
         process.stdin.on('data', b => d += b);
@@ -206,7 +251,7 @@ ensure_container() {
         log_file=$(mktemp "${TMPDIR:-/tmp}/claude-bunker-log-XXXXXX")
         if ! devcontainer up \
             --workspace-folder "$WORKSPACE" \
-            --override-config "$config_file" \
+            --config "$config_file" \
             --id-label "claude-bunker=${CONTAINER_NAME}" \
             > "$log_file" 2>&1; then
             echo "" >&2
@@ -220,7 +265,7 @@ ensure_container() {
         info "Building sandbox..."
         if ! devcontainer up \
             --workspace-folder "$WORKSPACE" \
-            --override-config "$config_file" \
+            --config "$config_file" \
             --id-label "claude-bunker=${CONTAINER_NAME}"; then
             die "Failed to build sandbox."
         fi
@@ -236,9 +281,6 @@ cleanup() {
     # Clean up temp config file
     [ -n "${_TMP_CONFIG:-}" ] && rm -f "$_TMP_CONFIG"
 
-    # Only tear down if we started the container
-    if ! ${_STARTED_BY_US:-false}; then return; fi
-
     local cname
     cname=$(resolve_container 2>/dev/null) || return
 
@@ -249,6 +291,7 @@ cleanup() {
         return
     fi
 
+    info "Stopping sandbox..."
     docker stop "$cname" >/dev/null 2>&1 || true
     docker rm "$cname" >/dev/null 2>&1 || true
 }
@@ -270,8 +313,26 @@ cmd_default() {
     local workdir
     workdir=$(effective_workdir)
 
+    if [ -z "$cname" ]; then
+        die "Could not find container after startup."
+    fi
+
+    if ! container_running; then
+        die "Container exited unexpectedly after startup."
+    fi
+
+    # Verify claude is installed in the container
+    if ! docker exec "$cname" which claude >/dev/null 2>&1; then
+        die "Claude CLI not found in container."
+    fi
+
+    info "Launching Claude..."
     local rc=0
-    docker exec -it -u node -w "$workdir" "$cname" claude "$@" || rc=$?
+    docker_exec_it -u node -w "$workdir" "$cname" claude "$@" || rc=$?
+
+    if [ $rc -ne 0 ] && [ $rc -ne 130 ]; then
+        warn "Claude exited with code $rc"
+    fi
 
     exit $rc
 }
@@ -289,7 +350,8 @@ cmd_shell() {
     local workdir
     workdir=$(effective_workdir)
 
-    docker exec -it -u node -w "$workdir" "$cname" zsh
+    info "Opening shell..."
+    docker_exec_it -u node -w "$workdir" "$cname" zsh
 }
 
 cmd_prune() {
