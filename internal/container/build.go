@@ -19,6 +19,10 @@ import (
 	"github.com/Devon-White/claude-bunker/internal/config"
 )
 
+// reproducibleModTime is a fixed timestamp used for all build context tar
+// entries to ensure reproducible builds and consistent Docker cache hits.
+var reproducibleModTime = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // BuildResult holds information about a completed image build.
 type BuildResult struct {
 	// BaseImageDigest is the digest of the pulled pre-built base image, if one
@@ -109,13 +113,18 @@ func BuildImage(ctx context.Context, cli *client.Client, imageTag string, stream
 			fmt.Fprintf(os.Stderr, "[claude-bunker] Pre-built image pull failed, building locally: %v\n", err)
 		} else {
 			// Has dynamic layers — pull base, then build dynamic layers on top.
-			digest, err := PullBaseImage(ctx, cli, baseRef)
-			if err == nil {
+			digest, pullErr := PullBaseImage(ctx, cli, baseRef)
+			if pullErr == nil {
 				result.BaseImageDigest = digest
-				return result, buildDynamicLayers(ctx, cli, imageTag, baseRef, streamOutput, projectCfg)
+				if dynErr := buildDynamicLayers(ctx, cli, imageTag, baseRef, streamOutput, projectCfg); dynErr == nil {
+					return result, nil
+				} else {
+					fmt.Fprintf(os.Stderr, "[claude-bunker] Dynamic layer build failed, rebuilding locally: %v\n", dynErr)
+					result.BaseImageDigest = ""
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "[claude-bunker] Pre-built image pull failed, building locally: %v\n", pullErr)
 			}
-			// Pull failed — fall through to full local build.
-			fmt.Fprintf(os.Stderr, "[claude-bunker] Pre-built image pull failed, building locally: %v\n", err)
 		}
 	}
 
@@ -166,7 +175,7 @@ func buildLocal(ctx context.Context, cli *client.Client, imageTag string, stream
 		}
 		cleanupFn = cleanup
 
-		baseContent := stripTrailingUser(baseDockerfile)
+		baseContent := generateBaseContent()
 		merged, err := GenerateDockerfile(baseContent, features, projectCfg.Apt, projectCfg.Env)
 		if err != nil {
 			cleanupFn()
@@ -205,9 +214,6 @@ func runBuild(ctx context.Context, cli *client.Client, imageTag string, tarBuf *
 
 	gitDeltaVersion := GitDeltaVersion
 	buildArgs["GIT_DELTA_VERSION"] = &gitDeltaVersion
-
-	zshVersion := ZshInDockerVersion
-	buildArgs["ZSH_IN_DOCKER_VERSION"] = &zshVersion
 
 	resp, err := cli.ImageBuild(ctx, tarBuf, types.ImageBuildOptions{
 		Tags:       []string{imageTag},
@@ -250,25 +256,6 @@ func ImageExists(ctx context.Context, cli *client.Client, imageTag string) bool 
 	return err == nil
 }
 
-// stripTrailingUser removes the final "USER <username>" line from a Dockerfile
-// so it can be re-added after feature layers.
-func stripTrailingUser(dockerfile string) string {
-	lines := strings.Split(dockerfile, "\n")
-	// Walk backward to find the last USER instruction
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
-		if trimmed == "" {
-			continue
-		}
-		if strings.HasPrefix(strings.ToUpper(trimmed), "USER ") {
-			lines = append(lines[:i], lines[i+1:]...)
-			break
-		}
-		break // stop at the first non-empty, non-USER line
-	}
-	return strings.Join(lines, "\n")
-}
-
 // buildContextTar creates a tar archive from the Dockerfile, embedded scripts,
 // and optional feature directories. When features is nil, only the base
 // context (Dockerfile + scripts) is included.
@@ -277,7 +264,7 @@ func buildContextTar(dockerfile string, features []ResolvedFeature) (*bytes.Buff
 	tw := tar.NewWriter(buf)
 
 	// Use a fixed timestamp for reproducible builds / consistent Docker cache hits.
-	modTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	modTime := reproducibleModTime
 
 	if err := addTarEntry(tw, "Dockerfile", []byte(dockerfile), 0644, modTime); err != nil {
 		return nil, fmt.Errorf("adding Dockerfile: %w", err)
@@ -287,6 +274,9 @@ func buildContextTar(dockerfile string, features []ResolvedFeature) (*bytes.Buff
 	}
 	if err := addTarEntry(tw, "tmux.conf", TmuxConf(), 0644, modTime); err != nil {
 		return nil, fmt.Errorf("adding tmux.conf: %w", err)
+	}
+	if err := addTarEntry(tw, "zshrc", ZshRC(), 0644, modTime); err != nil {
+		return nil, fmt.Errorf("adding zshrc: %w", err)
 	}
 
 	// Add feature directories under _features/<id>/
@@ -317,7 +307,7 @@ func buildContextTar(dockerfile string, features []ResolvedFeature) (*bytes.Buff
 				Name:    tarPath,
 				Mode:    mode,
 				Size:    int64(len(data)),
-				ModTime: info.ModTime(),
+				ModTime: modTime,
 			}
 			if err := tw.WriteHeader(hdr); err != nil {
 				return err

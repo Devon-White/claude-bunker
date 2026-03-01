@@ -15,8 +15,8 @@ import (
 )
 
 // ExecInteractive runs a command interactively with TTY support.
-// Returns the exit code of the command.
-func ExecInteractive(ctx context.Context, cli *client.Client, containerID, user string, cmd []string) (int, error) {
+// Returns the exit code, the Docker exec ID, and any error.
+func ExecInteractive(ctx context.Context, cli *client.Client, containerID, user string, cmd []string) (int, string, error) {
 	// Pass TERM so the container process knows terminal capabilities.
 	termVal := os.Getenv("TERM")
 	if termVal == "" {
@@ -35,21 +35,21 @@ func ExecInteractive(ctx context.Context, cli *client.Client, containerID, user 
 
 	execResp, err := cli.ContainerExecCreate(ctx, containerID, execCfg)
 	if err != nil {
-		return -1, fmt.Errorf("creating exec: %w", err)
+		return -1, "", fmt.Errorf("creating exec: %w", err)
 	}
 
 	attachResp, err := cli.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{
 		Tty: true,
 	})
 	if err != nil {
-		return -1, fmt.Errorf("attaching exec: %w", err)
+		return -1, "", fmt.Errorf("attaching exec: %w", err)
 	}
 	defer attachResp.Close()
 
 	// Set terminal to raw mode
 	oldState, err := platform.MakeRaw()
 	if err != nil {
-		return -1, fmt.Errorf("setting raw mode: %w", err)
+		return -1, "", fmt.Errorf("setting raw mode: %w", err)
 	}
 	defer platform.Restore(oldState)
 
@@ -84,16 +84,16 @@ func ExecInteractive(ctx context.Context, cli *client.Client, containerID, user 
 	select {
 	case <-outputDone:
 	case <-ctx.Done():
-		return -1, ctx.Err()
+		return -1, "", ctx.Err()
 	}
 
 	// Get exit code
 	inspect, err := cli.ContainerExecInspect(ctx, execResp.ID)
 	if err != nil {
-		return -1, fmt.Errorf("inspecting exec: %w", err)
+		return -1, execResp.ID, fmt.Errorf("inspecting exec: %w", err)
 	}
 
-	return inspect.ExitCode, nil
+	return inspect.ExitCode, execResp.ID, nil
 }
 
 // ExecNonInteractive runs a command without TTY and returns the output.

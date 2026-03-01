@@ -7,8 +7,7 @@ import (
 
 // Version constants — single source of truth for all build-time versions.
 const (
-	GitDeltaVersion    = "0.18.2"
-	ZshInDockerVersion = "1.2.0"
+	GitDeltaVersion = "0.18.2"
 )
 
 // BaseImageRegistry is the GHCR registry for pre-built base images.
@@ -28,21 +27,27 @@ func BaseImageRef(version string) string {
 // so it can include the dynamic domain allowlist from project config.
 const ManagedSettingsDir = "/etc/claude-code"
 
-// GenerateBaseDockerfile produces the complete base Dockerfile as a string.
-// This replaces the static .devcontainer/Dockerfile entirely.
+// GenerateBaseDockerfile produces the complete base Dockerfile as a string,
+// ending with USER claude-bunker. Used for fingerprinting and standalone builds.
+func GenerateBaseDockerfile() string {
+	return generateBaseContent() + fmt.Sprintf("USER %s\n\n", ContainerUser)
+}
+
+// generateBaseContent produces the Dockerfile content without the final USER
+// line. Used by GenerateBaseDockerfile (which appends USER) and by buildLocal
+// when merging with dynamic layers (GenerateDockerfile appends USER).
 //
 // Build optimizations applied vs the original:
 //   - ARG TZ / ENV TZ moved after apt-get install (prevents cache busting on TZ change)
 //   - wget removed from apt-get (only curl is used)
-//   - man-db index update suppressed via debconf-set-selections
 //   - User creation + debconf merged into single RUN layer
 //   - Bash history + workspace + sudoers merged into single RUN layer
-//   - COPY layers (init-firewall.sh, tmux.conf) placed AFTER expensive network installs
-//     (zsh-in-docker, Claude Code) to prevent cache busting on script changes
-//   - git-delta and zsh-in-docker use curl instead of wget
+//   - COPY layers (init-firewall.sh, tmux.conf, zshrc) placed AFTER expensive network installs
+//     to prevent cache busting on script changes
+//   - Minimal .zshrc replaces Oh My Zsh / zsh-in-docker (~30MB clone eliminated)
 //   - Version constants defined in Go (single source of truth)
 //   - /etc/claude-code dir created for managed-settings.json (written at container start)
-func GenerateBaseDockerfile() string {
+func generateBaseContent() string {
 	var b strings.Builder
 
 	// --- Base image ---
@@ -107,8 +112,8 @@ func GenerateBaseDockerfile() string {
 	b.WriteString("  dpkg -i \"/tmp/git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb\" && \\\n")
 	b.WriteString("  rm \"/tmp/git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb\"\n\n")
 
-	// --- Switch to non-root user for expensive network installs ---
-	b.WriteString("# Switch to non-root user for zsh and Claude Code installs\n")
+	// --- Switch to non-root user for Claude Code install ---
+	b.WriteString("# Switch to non-root user for Claude Code install\n")
 	b.WriteString("USER claude-bunker\n\n")
 
 	// --- Environment variables ---
@@ -117,15 +122,9 @@ func GenerateBaseDockerfile() string {
 	b.WriteString("ENV EDITOR=nano\n")
 	b.WriteString("ENV VISUAL=nano\n\n")
 
-	// --- zsh-in-docker (runs as non-root user, using curl instead of wget) ---
-	b.WriteString(fmt.Sprintf("ARG ZSH_IN_DOCKER_VERSION=%s\n", ZshInDockerVersion))
-	b.WriteString("RUN sh -c \"$(curl -fsSL https://github.com/deluan/zsh-in-docker/releases/download/v${ZSH_IN_DOCKER_VERSION}/zsh-in-docker.sh)\" -- \\\n")
-	b.WriteString("  -p git \\\n")
-	b.WriteString("  -p fzf \\\n")
-	b.WriteString("  -a \"source /usr/share/doc/fzf/examples/key-bindings.zsh\" \\\n")
-	b.WriteString("  -a \"source /usr/share/doc/fzf/examples/completion.zsh\" \\\n")
-	b.WriteString("  -a \"export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history\" \\\n")
-	b.WriteString("  -x\n\n")
+	// --- Minimal zsh config (replaces Oh My Zsh / zsh-in-docker) ---
+	// A small .zshrc provides fzf integration, completion, history, and a prompt
+	// without cloning the ~30MB Oh My Zsh repo or depending on external scripts.
 
 	// --- Claude Code install (runs as non-root user) ---
 	b.WriteString("# Install Claude Code via native installer\n")
@@ -137,11 +136,10 @@ func GenerateBaseDockerfile() string {
 	b.WriteString("USER root\n")
 	b.WriteString("COPY init-firewall.sh /usr/local/bin/\n")
 	b.WriteString("COPY tmux.conf /home/claude-bunker/.tmux.conf\n")
+	b.WriteString("COPY zshrc /home/claude-bunker/.zshrc\n")
 	b.WriteString("RUN chmod +x /usr/local/bin/init-firewall.sh && \\\n")
-	b.WriteString("  chown claude-bunker:claude-bunker /home/claude-bunker/.tmux.conf\n\n")
-
-	// --- Final user switch back to non-root ---
-	b.WriteString("USER claude-bunker\n\n")
+	b.WriteString("  chown claude-bunker:claude-bunker /home/claude-bunker/.tmux.conf /home/claude-bunker/.zshrc && \\\n")
+	b.WriteString("  chsh -s /bin/zsh claude-bunker\n\n")
 
 	return b.String()
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -185,11 +186,11 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 
 // RunPostStartOpts contains options for post-start container setup.
 type RunPostStartOpts struct {
-	ExtraDomains      string
-	PostCreateCommand string
-	GhToken           string
-	ApiKey            string
-	OAuthToken        string
+	ExtraDomains     string
+	PostStartCommand string
+	GhToken          string
+	ApiKey           string
+	OAuthToken       string
 }
 
 // RunPostStart runs the post-start commands inside the container:
@@ -198,7 +199,7 @@ type RunPostStartOpts struct {
 // 3. Run init-firewall.sh
 // 4. Copy host git identity
 // 5. Inject auth secrets (if provided)
-// 6. Run postCreateCommand (if configured)
+// 6. Run postStartCommand (if configured)
 func RunPostStart(ctx context.Context, cli *client.Client, containerID string, opts RunPostStartOpts) error {
 	// 1. Git safe directory
 	_, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
@@ -223,7 +224,7 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 	// 4. Copy host git identity (name/email only, not credential helpers)
 	if err := copyHostGitIdentity(ctx, cli, containerID); err != nil {
 		// Non-fatal: git identity is nice-to-have
-		fmt.Printf("[claude-bunker] WARNING: git identity: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: git identity: %v\n", err)
 	}
 
 	// 5. Inject auth secrets (if provided)
@@ -231,20 +232,20 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 		return fmt.Errorf("auth injection: %w", err)
 	}
 
-	// 6. Run postCreateCommand if configured.
+	// 6. Run postStartCommand if configured.
 	//
-	// TRUST BOUNDARY: postCreateCommand comes from the project's config.json,
+	// TRUST BOUNDARY: postStartCommand comes from the project's config.json,
 	// which lives inside the cloned repository. A malicious config.json can
 	// execute arbitrary shell commands here — this is inherent to the
 	// devcontainer model (VS Code has the same issue with its workspace trust
 	// model). Users should review config.json before running claude-bunker on
 	// untrusted repos. The firewall limits blast radius by restricting network
 	// access, but local filesystem access within /workspace is unrestricted.
-	if opts.PostCreateCommand != "" {
+	if opts.PostStartCommand != "" {
 		_, err = ExecNonInteractive(ctx, cli, containerID, ContainerUser,
-			[]string{"sh", "-c", opts.PostCreateCommand})
+			[]string{"sh", "-c", opts.PostStartCommand})
 		if err != nil {
-			return fmt.Errorf("postCreateCommand: %w", err)
+			return fmt.Errorf("postStartCommand: %w", err)
 		}
 	}
 
@@ -264,68 +265,77 @@ func injectAuthSecrets(ctx context.Context, cli *client.Client, containerID stri
 		return nil
 	}
 
-	// Build a single root script that writes all secrets + sets permissions.
-	// Each secret is passed as base64 to avoid shell escaping issues.
+	// Build a single root script that writes all secrets + wrapper + sets permissions.
 	var script strings.Builder
 	script.WriteString("set -e\n")
 	script.WriteString("chmod 711 /run/secrets\n")
 
 	ug := ContainerUser + ":" + ContainerUser
 
-	if opts.GhToken != "" {
-		encoded := base64.StdEncoding.EncodeToString([]byte(opts.GhToken))
-		script.WriteString(fmt.Sprintf("echo '%s' | base64 -d > /run/secrets/gh_token\n", encoded))
-		script.WriteString(fmt.Sprintf("chmod 400 /run/secrets/gh_token && chown %s /run/secrets/gh_token\n", ug))
-	}
-
-	if opts.ApiKey != "" {
-		encoded := base64.StdEncoding.EncodeToString([]byte(opts.ApiKey))
-		script.WriteString(fmt.Sprintf("echo '%s' | base64 -d > /run/secrets/api_key\n", encoded))
-		script.WriteString(fmt.Sprintf("chmod 400 /run/secrets/api_key && chown %s /run/secrets/api_key\n", ug))
-	}
-
-	if opts.OAuthToken != "" {
-		encoded := base64.StdEncoding.EncodeToString([]byte(opts.OAuthToken))
-		script.WriteString(fmt.Sprintf("echo '%s' | base64 -d > /run/secrets/oauth_token\n", encoded))
-		script.WriteString(fmt.Sprintf("chmod 400 /run/secrets/oauth_token && chown %s /run/secrets/oauth_token\n", ug))
-	}
-
-	// Auth wrapper script — reads secrets from tmpfs files and exports as
-	// env vars before exec-ing the wrapped command. Ensures tokens never
-	// appear in docker inspect or container env.
-	if opts.ApiKey != "" || opts.OAuthToken != "" {
-		wrapperPath := ContainerHome + "/.claude-auth-wrapper.sh"
-		script.WriteString(fmt.Sprintf("cat > %s << 'WRAPPER_EOF'\n", wrapperPath))
-		script.WriteString("#!/bin/sh\n")
-		if opts.ApiKey != "" {
-			script.WriteString("export ANTHROPIC_API_KEY=\"$(cat /run/secrets/api_key)\"\n")
-		}
-		if opts.OAuthToken != "" {
-			script.WriteString("export CLAUDE_CODE_OAUTH_TOKEN=\"$(cat /run/secrets/oauth_token)\"\n")
-		}
-		script.WriteString("exec \"$@\"\n")
-		script.WriteString("WRAPPER_EOF\n")
-		script.WriteString(fmt.Sprintf("chmod 755 %s && chown %s %s\n", wrapperPath, ug, wrapperPath))
-	}
+	writeSecretFiles(&script, ug, opts)
+	createAuthWrapper(&script, ug, opts)
 
 	// Single root exec: write all secrets + wrapper + set all permissions
-	_, err := ExecNonInteractive(ctx, cli, containerID, "root",
-		[]string{"sh", "-c", script.String()})
-	if err != nil {
+	if _, err := ExecNonInteractive(ctx, cli, containerID, "root",
+		[]string{"sh", "-c", script.String()}); err != nil {
 		return fmt.Errorf("writing auth secrets: %w", err)
 	}
 
 	// Single user exec: git credential helper (if gh token provided)
 	if opts.GhToken != "" {
 		credentialHelper := `!f() { echo "protocol=https"; echo "host=github.com"; echo "username=x-access-token"; echo "password=$(cat /run/secrets/gh_token)"; }; f`
-		_, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
-			[]string{"git", "config", "--global", "credential.https://github.com.helper", credentialHelper})
-		if err != nil {
+		if _, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
+			[]string{"git", "config", "--global", "credential.https://github.com.helper", credentialHelper}); err != nil {
 			return fmt.Errorf("git credential helper: %w", err)
 		}
 	}
 
 	return nil
+}
+
+// writeSecretFiles appends shell commands to script that write each provided
+// token to /run/secrets/ as a base64-decoded file with locked-down permissions.
+func writeSecretFiles(script *strings.Builder, ug string, opts RunPostStartOpts) {
+	type secret struct {
+		token string
+		file  string
+	}
+	secrets := []secret{
+		{opts.GhToken, "gh_token"},
+		{opts.ApiKey, "api_key"},
+		{opts.OAuthToken, "oauth_token"},
+	}
+	for _, s := range secrets {
+		if s.token == "" {
+			continue
+		}
+		encoded := base64.StdEncoding.EncodeToString([]byte(s.token))
+		script.WriteString(fmt.Sprintf("echo '%s' | base64 -d > /run/secrets/%s\n", encoded, s.file))
+		script.WriteString(fmt.Sprintf("chmod 400 /run/secrets/%s && chown %s /run/secrets/%s\n", s.file, ug, s.file))
+	}
+}
+
+// createAuthWrapper appends shell commands to script that create a wrapper
+// script at ~/.claude-auth-wrapper.sh. The wrapper reads secrets from tmpfs
+// files and exports them as env vars before exec-ing the wrapped command,
+// ensuring tokens never appear in docker inspect or container env.
+func createAuthWrapper(script *strings.Builder, ug string, opts RunPostStartOpts) {
+	if opts.ApiKey == "" && opts.OAuthToken == "" {
+		return
+	}
+
+	wrapperPath := ContainerHome + "/.claude-auth-wrapper.sh"
+	script.WriteString(fmt.Sprintf("cat > %s << 'WRAPPER_EOF'\n", wrapperPath))
+	script.WriteString("#!/bin/sh\n")
+	if opts.ApiKey != "" {
+		script.WriteString("export ANTHROPIC_API_KEY=\"$(cat /run/secrets/api_key)\"\n")
+	}
+	if opts.OAuthToken != "" {
+		script.WriteString("export CLAUDE_CODE_OAUTH_TOKEN=\"$(cat /run/secrets/oauth_token)\"\n")
+	}
+	script.WriteString("exec \"$@\"\n")
+	script.WriteString("WRAPPER_EOF\n")
+	script.WriteString(fmt.Sprintf("chmod 755 %s && chown %s %s\n", wrapperPath, ug, wrapperPath))
 }
 
 // copyHostGitIdentity extracts user.name and user.email from the host's
@@ -350,8 +360,10 @@ func copyHostGitIdentity(ctx context.Context, cli *client.Client, containerID st
 	}
 
 	if len(cmds) > 0 {
-		_, _ = ExecNonInteractive(ctx, cli, containerID, ContainerUser,
-			[]string{"sh", "-c", strings.Join(cmds, " && ")})
+		if _, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
+			[]string{"sh", "-c", strings.Join(cmds, " && ")}); err != nil {
+			return fmt.Errorf("setting git config in container: %w", err)
+		}
 	}
 
 	return nil
@@ -392,20 +404,34 @@ func StopAndRemove(ctx context.Context, cli *client.Client, containerName string
 	return Remove(ctx, cli, id)
 }
 
-// HasActiveSessions checks if the container has active claude or zsh sessions
-// using Docker's ContainerTop API. This avoids the pgrep self-matching problem
-// and doesn't require exec-ing a shell into the container.
-func HasActiveSessions(ctx context.Context, cli *client.Client, containerID string) bool {
-	top, err := cli.ContainerTop(ctx, containerID, []string{"-eo", "comm"})
+// HasOtherActiveSessions checks whether the container has any running exec
+// sessions other than myExecID. It uses Docker's ContainerInspect to enumerate
+// exec IDs and ContainerExecInspect to check each one's Running status.
+// This replaces the old process-name heuristic (ContainerTop + string matching)
+// with precise exec ID tracking.
+func HasOtherActiveSessions(ctx context.Context, cli *client.Client, containerID, myExecID string) bool {
+	inspect, err := cli.ContainerInspect(ctx, containerID)
 	if err != nil {
 		return false
 	}
-	for _, proc := range top.Processes {
-		for _, field := range proc {
-			if field == "claude" || field == "zsh" {
-				return true
-			}
+
+	for _, eid := range inspect.ExecIDs {
+		if eid == myExecID {
+			continue
+		}
+		execInfo, err := cli.ContainerExecInspect(ctx, eid)
+		if err != nil {
+			continue
+		}
+		if execInfo.Running {
+			return true
 		}
 	}
 	return false
+}
+
+// HasAnyActiveSessions checks whether the container has any running exec sessions.
+// Used to prevent stopping a container with active sessions during fingerprint-based rebuilds.
+func HasAnyActiveSessions(ctx context.Context, cli *client.Client, containerID string) bool {
+	return HasOtherActiveSessions(ctx, cli, containerID, "")
 }

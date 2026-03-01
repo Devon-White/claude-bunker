@@ -67,10 +67,11 @@ iptables -P FORWARD DROP
 iptables -P OUTPUT DROP
 
 # Sanity check: verify policies took effect immediately
-if ! iptables -S OUTPUT 2>/dev/null | grep -q "^-P OUTPUT DROP$"; then
+SANITY_OUTPUT=$(iptables -S OUTPUT 2>/dev/null || true)
+if ! echo "$SANITY_OUTPUT" | grep -q -- "-P OUTPUT DROP"; then
     echo "FATAL: iptables -P OUTPUT DROP did not take effect"
     echo "iptables version: $(iptables --version 2>&1)"
-    echo "iptables -S OUTPUT: $(iptables -S OUTPUT 2>&1)"
+    echo "iptables -S OUTPUT: $SANITY_OUTPUT"
     exit 1
 fi
 
@@ -268,12 +269,13 @@ fi
 # ~5-10s and are only useful for debugging — gated behind BUNKER_VERBOSE.
 # ---------------------------------------------------------------------------
 echo "Verifying firewall policies..."
-# Use -S (--list-rules) for reliable, machine-readable output that is consistent
-# across iptables-nft and iptables-legacy backends. The -L format varies.
-if ! iptables -S OUTPUT 2>/dev/null | grep -q "^-P OUTPUT DROP$"; then
+# Capture output first, then grep — avoids pipefail causing false failures
+# when iptables returns non-zero transiently (lock contention, stderr warnings).
+VERIFY_OUTPUT=$(iptables -S OUTPUT 2>/dev/null || true)
+if ! echo "$VERIFY_OUTPUT" | grep -q -- "-P OUTPUT DROP"; then
     echo "ERROR: OUTPUT chain default policy is not DROP"
     echo "DEBUG: iptables -S OUTPUT:"
-    iptables -S OUTPUT 2>&1 || true
+    echo "$VERIFY_OUTPUT"
     exit 1
 fi
 echo "Firewall verification passed — OUTPUT policy is DROP"

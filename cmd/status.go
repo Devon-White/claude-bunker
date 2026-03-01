@@ -27,7 +27,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	cli, err := ctr.NewClient()
 	if err != nil {
-		die(err.Error())
+		return fmt.Errorf("docker client: %w", err)
 	}
 	defer cli.Close()
 
@@ -44,7 +44,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		Filters: f,
 	})
 	if err != nil {
-		die("Failed to query containers: " + err.Error())
+		return fmt.Errorf("failed to query containers: %w", err)
 	}
 
 	fmt.Printf("Workspace:  %s\n", workspace)
@@ -59,7 +59,11 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	c := containers[0]
 	state := c.State
 	fmt.Printf("State:      %s\n", state)
-	fmt.Printf("ID:         %s\n", c.ID[:12])
+	idShort := c.ID
+	if len(idShort) > 12 {
+		idShort = idShort[:12]
+	}
+	fmt.Printf("ID:         %s\n", idShort)
 
 	if state == "running" {
 		// Show uptime
@@ -90,7 +94,55 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Resolved project config
+	cfg, cfgErr := config.LoadProjectConfig(workspace)
+	if cfgErr == nil {
+		printResolvedConfig(cfg)
+	}
+
 	return nil
+}
+
+// printResolvedConfig shows non-empty project config fields.
+func printResolvedConfig(cfg config.ProjectConfig) {
+	hasConfig := len(cfg.Apt) > 0 || len(cfg.Features) > 0 || len(cfg.Env) > 0 ||
+		len(cfg.AllowDomains) > 0 || cfg.PostStartCommand != "" ||
+		cfg.Workspace != "" || len(cfg.Exclude) > 0
+	if !hasConfig {
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("Config:")
+	if len(cfg.Apt) > 0 {
+		fmt.Printf("  apt:        %s\n", strings.Join(cfg.Apt, ", "))
+	}
+	if len(cfg.Features) > 0 {
+		names := make([]string, 0, len(cfg.Features))
+		for name := range cfg.Features {
+			names = append(names, name)
+		}
+		fmt.Printf("  features:   %s\n", strings.Join(names, ", "))
+	}
+	if len(cfg.Env) > 0 {
+		pairs := make([]string, 0, len(cfg.Env))
+		for k, v := range cfg.Env {
+			pairs = append(pairs, k+"="+v)
+		}
+		fmt.Printf("  env:        %s\n", strings.Join(pairs, ", "))
+	}
+	if len(cfg.AllowDomains) > 0 {
+		fmt.Printf("  domains:    %s\n", strings.Join(cfg.AllowDomains, ", "))
+	}
+	if cfg.PostStartCommand != "" {
+		fmt.Printf("  postStart:  %s\n", cfg.PostStartCommand)
+	}
+	if cfg.Workspace != "" {
+		fmt.Printf("  workspace:  %s\n", cfg.Workspace)
+	}
+	if len(cfg.Exclude) > 0 {
+		fmt.Printf("  exclude:    %s\n", strings.Join(cfg.Exclude, ", "))
+	}
 }
 
 // listActiveSessions returns the names of active interactive sessions (claude, zsh).

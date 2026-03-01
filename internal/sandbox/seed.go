@@ -36,19 +36,22 @@ var containerUserGroup = container.ContainerUser + ":" + container.ContainerUser
 //
 // The log writer controls where informational output is sent; pass
 // io.Discard to suppress it.
-func SeedSettings(ctx context.Context, cli *client.Client, containerID, workspace, extraDomains string, log io.Writer) error {
+func SeedSettings(ctx context.Context, cli *client.Client, containerID, workspace, extraDomains string, logW io.Writer) error {
 	// Write managed-settings.json with full sandbox config including domains.
 	// This has the highest precedence in Claude Code and cannot be overridden.
-	if err := writeManagedSettings(ctx, cli, containerID, extraDomains, log); err != nil {
+	if err := writeManagedSettings(ctx, cli, containerID, extraDomains, logW); err != nil {
 		return fmt.Errorf("managed-settings: %w", err)
 	}
 
 	hostClaudeDir := filepath.Join(workspace, ".claude")
 
-	// Ensure the tmpfs at /workspace/.claude is owned by the container user
-	// and the directory exists (Docker mounts tmpfs as root by default).
-	_, _ = container.ExecNonInteractive(ctx, cli, containerID, "root",
-		[]string{"sh", "-c", "chown " + containerUserGroup + " /workspace/.claude && mkdir -p /workspace/.claude"})
+	// Ensure the tmpfs at /workspace/.claude exists and is owned by the
+	// container user (Docker mounts tmpfs as root by default).
+	// mkdir first so chown doesn't fail if the directory is missing.
+	if _, err := container.ExecNonInteractive(ctx, cli, containerID, "root",
+		[]string{"sh", "-c", "mkdir -p /workspace/.claude && chown " + containerUserGroup + " /workspace/.claude"}); err != nil {
+		fmt.Fprintf(logW, "[claude-bunker] WARNING: setup /workspace/.claude: %v\n", err)
+	}
 
 	// Copy host's .claude/*.json into the container's tmpfs overlay.
 	if info, err := os.Stat(hostClaudeDir); err == nil && info.IsDir() {
@@ -60,15 +63,17 @@ func SeedSettings(ctx context.Context, cli *client.Client, containerID, workspac
 		for _, f := range matches {
 			base := filepath.Base(f)
 			if err := container.CopyFileToContainer(ctx, cli, containerID, f, "/workspace/.claude/"); err != nil {
-				fmt.Fprintf(log, "[claude-bunker] WARNING: Failed to copy %s: %v\n", base, err)
+				fmt.Fprintf(logW, "[claude-bunker] WARNING: Failed to copy %s: %v\n", base, err)
 			}
 		}
 	}
 
 	// Fix ownership of all files in /workspace/.claude/ — CopyToContainer
 	// creates files as root, but Claude Code runs as claude-bunker.
-	_, _ = container.ExecNonInteractive(ctx, cli, containerID, "root",
-		[]string{"chown", "-R", containerUserGroup, "/workspace/.claude"})
+	if _, err := container.ExecNonInteractive(ctx, cli, containerID, "root",
+		[]string{"chown", "-R", containerUserGroup, "/workspace/.claude"}); err != nil {
+		fmt.Fprintf(logW, "[claude-bunker] WARNING: chown -R /workspace/.claude: %v\n", err)
+	}
 
 	return nil
 }
@@ -78,7 +83,7 @@ func SeedSettings(ctx context.Context, cli *client.Client, containerID, workspac
 //
 // managed-settings.json has the highest precedence in Claude Code — it cannot
 // be overridden by settings.json, settings.local.json, or the /sandbox command.
-func writeManagedSettings(ctx context.Context, cli *client.Client, containerID, extraDomains string, log io.Writer) error {
+func writeManagedSettings(ctx context.Context, cli *client.Client, containerID, extraDomains string, logW io.Writer) error {
 	domains := make([]string, len(baseDomains))
 	copy(domains, baseDomains)
 	if extraDomains != "" {
@@ -120,7 +125,7 @@ func writeManagedSettings(ctx context.Context, cli *client.Client, containerID, 
 		return fmt.Errorf("chmod managed-settings.json: %w", err)
 	}
 
-	fmt.Fprintf(log, "[claude-bunker] Wrote managed-settings.json with %d allowed domains\n", len(domains))
+	fmt.Fprintf(logW, "[claude-bunker] Wrote managed-settings.json with %d allowed domains\n", len(domains))
 	return nil
 }
 
@@ -150,8 +155,10 @@ func SeedSessionHistory(ctx context.Context, cli *client.Client, containerID, wo
 
 	// Ensure the container's session directory exists
 	containerSessionDir := container.ContainerHome + "/.claude/projects/-workspace/"
-	_, _ = container.ExecNonInteractive(ctx, cli, containerID, container.ContainerUser,
-		[]string{"mkdir", "-p", containerSessionDir})
+	if _, err := container.ExecNonInteractive(ctx, cli, containerID, container.ContainerUser,
+		[]string{"mkdir", "-p", containerSessionDir}); err != nil {
+		fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: mkdir -p %s: %v\n", containerSessionDir, err)
+	}
 
 	// Copy all session files (transcripts, sub-agents, tool results)
 	if err := container.CopyDirToContainer(ctx, cli, containerID, hostSessionDir, containerSessionDir); err != nil {
@@ -159,8 +166,10 @@ func SeedSessionHistory(ctx context.Context, cli *client.Client, containerID, wo
 	}
 
 	// Fix ownership — CopyToContainer creates files as root, but Claude runs as claude-bunker
-	_, _ = container.ExecNonInteractive(ctx, cli, containerID, "root",
-		[]string{"chown", "-R", containerUserGroup, containerSessionDir})
+	if _, err := container.ExecNonInteractive(ctx, cli, containerID, "root",
+		[]string{"chown", "-R", containerUserGroup, containerSessionDir}); err != nil {
+		fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: chown -R %s: %v\n", containerSessionDir, err)
+	}
 
 	return nil
 }

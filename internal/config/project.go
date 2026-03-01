@@ -18,7 +18,8 @@ type ProjectConfig struct {
 	Features          map[string]map[string]interface{} `json:"features"`
 	Apt               []string                          `json:"apt"`
 	Env               map[string]string                 `json:"env"`
-	PostCreateCommand string                            `json:"postCreateCommand"`
+	PostStartCommand  string                            `json:"postStartCommand"`
+	PostCreateCommand string                            `json:"postCreateCommand,omitempty"` // deprecated: use postStartCommand
 	GhToken           string                            `json:"ghToken,omitempty"`
 	SeedHistory       *bool                             `json:"seedHistory,omitempty"`
 }
@@ -33,9 +34,9 @@ func (c ProjectConfig) ShouldSeedHistory() bool {
 }
 
 // HasGeneratedLayers returns true if the config requires generating
-// additional Dockerfile layers (features or apt packages).
+// additional Dockerfile layers (features, apt packages, or env vars).
 func (c ProjectConfig) HasGeneratedLayers() bool {
-	return len(c.Features) > 0 || len(c.Apt) > 0
+	return len(c.Features) > 0 || len(c.Apt) > 0 || len(c.Env) > 0
 }
 
 // LoadProjectConfig reads .claude/.claude-bunker/config.json from the workspace.
@@ -53,21 +54,37 @@ func LoadProjectConfig(workspace string) (ProjectConfig, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return ProjectConfig{}, err
 	}
+	// Normalize domain whitespace before validation
+	for i, d := range cfg.AllowDomains {
+		cfg.AllowDomains[i] = strings.TrimSpace(d)
+	}
 	if err := validateDomains(cfg.AllowDomains); err != nil {
 		return ProjectConfig{}, err
+	}
+	// Backward compat: postCreateCommand -> postStartCommand
+	if cfg.PostStartCommand == "" && cfg.PostCreateCommand != "" {
+		cfg.PostStartCommand = cfg.PostCreateCommand
+		cfg.PostCreateCommand = ""
 	}
 	return cfg, nil
 }
 
 // validateDomains checks that domain patterns in allowDomains are reasonable.
-// It rejects empty strings and patterns with fewer than 2 domain segments
-// (which would be overly broad, e.g. "*.com", "*.org", "*").
+// It rejects empty strings, patterns with fewer than 2 domain segments
+// (which would be overly broad, e.g. "*.com", "*.org", "*"), and malformed
+// wildcard prefixes. Single-segment domains like "localhost" are intentionally
+// rejected — the firewall resolves domains to IPs, and single-segment names
+// are too broad for a security allowlist.
 func validateDomains(domains []string) error {
-	for i, d := range domains {
-		d = strings.TrimSpace(d)
-		domains[i] = d // normalize in-place so trimmed values are used downstream
+	for _, d := range domains {
 		if d == "" {
 			return fmt.Errorf("allowDomains: empty domain pattern")
+		}
+
+		// Wildcards must use the "*.domain" form (e.g. "*.github.com").
+		// Reject malformed wildcards like "*github.com" (missing dot).
+		if strings.HasPrefix(d, "*") && !strings.HasPrefix(d, "*.") {
+			return fmt.Errorf("allowDomains: pattern %q has invalid wildcard (use %q instead)", d, "*."+d[1:])
 		}
 
 		// Strip leading wildcard prefix for segment counting

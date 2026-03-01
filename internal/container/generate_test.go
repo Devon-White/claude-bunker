@@ -80,6 +80,9 @@ func TestGenerateDockerfile_Features(t *testing.T) {
 			Options: map[string]interface{}{
 				"version": "3.12",
 			},
+			Env: map[string]string{
+				"PATH": "/usr/local/python/current/bin:${PATH}",
+			},
 		},
 	}
 	got, err := GenerateDockerfile(base, features, nil, nil)
@@ -93,11 +96,50 @@ func TestGenerateDockerfile_Features(t *testing.T) {
 	if !strings.Contains(got, "COPY _features/python/") {
 		t.Error("missing feature COPY instruction")
 	}
-	if !strings.Contains(got, "install.sh") {
-		t.Error("missing install.sh execution")
+	if !strings.Contains(got, "devcontainer-features-install.sh") {
+		t.Error("missing wrapper script execution")
 	}
-	if !strings.Contains(got, `PYTHON_VERSION="3.12"`) {
-		t.Error("missing feature option ENV")
+	// Options should NOT appear as Dockerfile ENV instructions.
+	// They go in devcontainer-features.env (sourced by the wrapper at build time).
+	if strings.Contains(got, `ENV VERSION=`) || strings.Contains(got, `ENV PYTHON_VERSION=`) {
+		t.Error("feature options should not be Dockerfile ENV instructions")
+	}
+}
+
+func TestGenerateDockerfile_ContainerEnvBeforeInstall(t *testing.T) {
+	base := "FROM debian:bookworm-slim"
+	features := []ResolvedFeature{
+		{
+			ID:     "go",
+			Source: "ghcr.io/devcontainers/features/go:1",
+			Env: map[string]string{
+				"GOROOT": "/usr/local/go",
+				"GOPATH": "/go",
+				"PATH":   "/usr/local/go/bin:/go/bin:${PATH}",
+			},
+		},
+	}
+	got, err := GenerateDockerfile(base, features, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// containerEnv should use plain ${PATH} (Docker-native expansion)
+	if !strings.Contains(got, `GOROOT="/usr/local/go"`) {
+		t.Error("missing GOROOT env var")
+	}
+	if !strings.Contains(got, `PATH="/usr/local/go/bin:/go/bin:${PATH}"`) {
+		t.Error("missing PATH env var with Docker-native ${PATH} expansion")
+	}
+
+	// containerEnv must appear BEFORE the RUN install line
+	envIdx := strings.Index(got, `ENV PATH=`)
+	runIdx := strings.Index(got, "devcontainer-features-install.sh")
+	if envIdx < 0 || runIdx < 0 {
+		t.Fatal("missing ENV or RUN instruction")
+	}
+	if envIdx > runIdx {
+		t.Error("containerEnv must be emitted BEFORE the install RUN layer")
 	}
 }
 

@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,20 +43,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 		die("Failed to create config directory: " + err.Error())
 	}
 
-	// Create default config
-	cfg := map[string]interface{}{
-		"workspace":    "/workspace",
-		"exclude":      []string{},
-		"allowDomains": []string{},
-		"apt":          []string{},
-		"env":          map[string]string{},
-	}
-
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		die("Failed to marshal config: " + err.Error())
-	}
-	data = append(data, '\n')
+	// Create minimal empty config
+	data := []byte("{}\n")
 
 	if err := os.WriteFile(cfgPath, data, 0o644); err != nil {
 		die("Failed to write config: " + err.Error())
@@ -65,13 +52,29 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	info("Created " + cfgPath)
 	fmt.Println()
-	fmt.Println("Available options:")
-	fmt.Println("  workspace      - Container working directory (default: /workspace)")
-	fmt.Println("  exclude        - Paths to hide from sandbox via tmpfs overlays")
-	fmt.Println("  allowDomains   - Additional domains the sandbox can access")
-	fmt.Println("  apt            - APT packages to install in the sandbox image")
-	fmt.Println("  env            - Environment variables to set in the container")
-	fmt.Println("  features       - OCI dev container features to install")
-	fmt.Println("  postCreateCommand - Shell command to run after container creation")
+	fmt.Println("Edit the config to customize your sandbox. Example:")
+	fmt.Println()
+	fmt.Println(`  {`)
+	fmt.Println(`    "allowDomains": ["pypi.org", "files.pythonhosted.org"],`)
+	fmt.Println(`    "apt": ["python3", "python3-pip"],`)
+	fmt.Println(`    "features": {`)
+	fmt.Println(`      "ghcr.io/devcontainers/features/node:1": {"version": "20"}`)
+	fmt.Println(`    },`)
+	fmt.Println(`    "env": {"NODE_ENV": "development"},`)
+	fmt.Println(`    "postStartCommand": "npm install"`)
+	fmt.Println(`  }`)
+	fmt.Println()
+	fmt.Println("Fields:")
+	fmt.Println("  allowDomains     Additional domains the sandbox can access")
+	fmt.Println("  apt              APT packages to install in the image")
+	fmt.Println("  features         OCI devcontainer features (languages, runtimes)")
+	fmt.Println("  env              Environment variables baked into the image")
+	fmt.Println("  postStartCommand Shell command to run after container starts")
+	fmt.Println("  exclude          Paths to hide via tmpfs overlays")
+	fmt.Println("  workspace        Container working directory (monorepo subpath)")
+	fmt.Println("  ghToken          GitHub PAT for git push from container")
+	fmt.Println("  seedHistory      Seed host session history (default: true)")
+	fmt.Println()
+	fmt.Println("Docs: https://github.com/Devon-White/claude-bunker#project-config")
 	return nil
 }

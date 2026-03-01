@@ -31,7 +31,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 
 	cli, err := ctr.NewClient()
 	if err != nil {
-		die(err.Error())
+		return fmt.Errorf("docker client: %w", err)
 	}
 	defer cli.Close()
 
@@ -41,7 +41,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 
 	id, err := ctr.FindByLabel(ctx, cli, containerName)
 	if err != nil {
-		die("Failed to find container: " + err.Error())
+		return fmt.Errorf("failed to find container: %w", err)
 	}
 	if id == "" {
 		fmt.Println("No sandbox container found for this workspace.")
@@ -58,7 +58,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		Tail:       tail,
 	})
 	if err != nil {
-		die("Failed to get logs: " + err.Error())
+		return fmt.Errorf("failed to get logs: %w", err)
 	}
 	defer reader.Close()
 

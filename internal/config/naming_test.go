@@ -8,8 +8,8 @@ import (
 func TestContainerName_Format(t *testing.T) {
 	name := ContainerName("/home/user/my-project")
 
-	if !strings.HasPrefix(name, "claude-bunker-my-project-") {
-		t.Errorf("expected prefix 'claude-bunker-my-project-', got %q", name)
+	if !strings.HasPrefix(name, "my-project-") {
+		t.Errorf("expected prefix 'my-project-', got %q", name)
 	}
 	// 8-char hex hash suffix
 	parts := strings.Split(name, "-")
@@ -44,11 +44,11 @@ func TestContainerName_Sanitization(t *testing.T) {
 		workspace  string
 		wantPrefix string
 	}{
-		{"/home/user/MyProject", "claude-bunker-myproject-"},
-		{"/home/user/my project", "claude-bunker-my-project-"},
-		{"/home/user/my___project!!!", "claude-bunker-my-project-"},
-		{"/home/user/UPPER-case-MIX", "claude-bunker-upper-case-mix-"},
-		{"/home/user/---leading-trailing---", "claude-bunker-leading-trailing-"},
+		{"/home/user/MyProject", "myproject-"},
+		{"/home/user/my project", "my-project-"},
+		{"/home/user/my___project!!!", "my-project-"},
+		{"/home/user/UPPER-case-MIX", "upper-case-mix-"},
+		{"/home/user/---leading-trailing---", "leading-trailing-"},
 	}
 
 	for _, tt := range tests {
@@ -62,24 +62,24 @@ func TestContainerName_Sanitization(t *testing.T) {
 }
 
 func TestBashHistoryVolume(t *testing.T) {
-	got := BashHistoryVolume("claude-bunker-myproject-abcd1234")
-	want := "claude-code-bashhistory-claude-bunker-myproject-abcd1234"
+	got := BashHistoryVolume("myproject-abcd1234")
+	want := "claude-code-bashhistory-myproject-abcd1234"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
 func TestClaudeConfigVolume(t *testing.T) {
-	got := ClaudeConfigVolume("claude-bunker-myproject-abcd1234")
-	want := "claude-code-config-claude-bunker-myproject-abcd1234"
+	got := ClaudeConfigVolume("myproject-abcd1234")
+	want := "claude-code-config-myproject-abcd1234"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
 func TestImageTag(t *testing.T) {
-	got := ImageTag("claude-bunker-myproject-abcd1234")
-	want := "claude-bunker:claude-bunker-myproject-abcd1234"
+	got := ImageTag("myproject-abcd1234")
+	want := "claude-bunker:myproject-abcd1234"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

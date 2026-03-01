@@ -2,11 +2,13 @@ package container
 
 import (
 	"archive/tar"
+	"container/heap"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -29,11 +31,31 @@ type ResolvedFeature struct {
 
 // featureMetadata is the subset of devcontainer-feature.json we care about.
 type featureMetadata struct {
-	ID            string            `json:"id"`
-	InstallsAfter []struct {
-		Feature string `json:"feature"`
-	} `json:"installsAfter"`
-	ContainerEnv map[string]string `json:"containerEnv"`
+	ID               string              `json:"id"`
+	RawInstallsAfter []json.RawMessage   `json:"installsAfter"`
+	ContainerEnv     map[string]string   `json:"containerEnv"`
+}
+
+// installsAfterRefs parses the installsAfter field, which the devcontainer
+// spec allows as either ["string"] or [{"feature": "string"}].
+func (m featureMetadata) installsAfterRefs() []string {
+	var refs []string
+	for _, raw := range m.RawInstallsAfter {
+		// Try string first (e.g. "ghcr.io/devcontainers/features/common-utils")
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			refs = append(refs, s)
+			continue
+		}
+		// Try object (e.g. {"feature": "ghcr.io/devcontainers/features/common-utils"})
+		var obj struct {
+			Feature string `json:"feature"`
+		}
+		if json.Unmarshal(raw, &obj) == nil && obj.Feature != "" {
+			refs = append(refs, obj.Feature)
+		}
+	}
+	return refs
 }
 
 // ResolveFeatures downloads devcontainer features from OCI registries and
@@ -60,12 +82,13 @@ func ResolveFeatures(features map[string]map[string]interface{}) ([]ResolvedFeat
 			return nil, func() {}, err
 		}
 
-		featureDir := filepath.Join(tmpBase, name)
+		featureDir := filepath.Join(tmpBase, safeFeatureDirName(name))
 		if err := os.MkdirAll(featureDir, 0755); err != nil {
 			cleanup()
 			return nil, func() {}, fmt.Errorf("mkdir %s: %w", name, err)
 		}
 
+		fmt.Fprintf(os.Stderr, "[claude-bunker] Pulling feature: %s\n", name)
 		if err := downloadAndExtract(ref, featureDir); err != nil {
 			cleanup()
 			return nil, func() {}, fmt.Errorf("downloading feature %s (%s): %w", name, ref, err)
@@ -81,9 +104,11 @@ func ResolveFeatures(features map[string]map[string]interface{}) ([]ResolvedFeat
 			meta.ID = name
 		}
 
-		var installsAfter []string
-		for _, dep := range meta.InstallsAfter {
-			installsAfter = append(installsAfter, dep.Feature)
+		installsAfter := meta.installsAfterRefs()
+
+		if err := writeFeatureFiles(featureDir, opts); err != nil {
+			cleanup()
+			return nil, func() {}, fmt.Errorf("writing feature files for %s: %w", name, err)
 		}
 
 		resolved = append(resolved, ResolvedFeature{
@@ -131,7 +156,11 @@ func extractTar(r io.Reader, destDir string) error {
 			return err
 		}
 
-		target := filepath.Join(destDir, filepath.Clean(hdr.Name))
+		cleaned := filepath.Clean(hdr.Name)
+		if cleaned == "." {
+			continue // root directory entry, skip
+		}
+		target := filepath.Join(destDir, cleaned)
 		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) {
 			return fmt.Errorf("tar entry %q escapes destination directory", hdr.Name)
 		}
@@ -172,29 +201,180 @@ func readFeatureMetadata(featureDir string) (featureMetadata, error) {
 	return meta, nil
 }
 
+// featureHeap is a min-heap of feature indices, ordered alphabetically by ID.
+// It is used by sortFeatures to break ties during topological sort.
+type featureHeap struct {
+	indices  []int
+	features []ResolvedFeature
+}
+
+func (h featureHeap) Len() int           { return len(h.indices) }
+func (h featureHeap) Less(i, j int) bool { return h.features[h.indices[i]].ID < h.features[h.indices[j]].ID }
+func (h featureHeap) Swap(i, j int)      { h.indices[i], h.indices[j] = h.indices[j], h.indices[i] }
+
+func (h *featureHeap) Push(x any) {
+	h.indices = append(h.indices, x.(int))
+}
+
+func (h *featureHeap) Pop() any {
+	old := h.indices
+	n := len(old)
+	val := old[n-1]
+	h.indices = old[:n-1]
+	return val
+}
+
 // sortFeatures sorts resolved features by installsAfter dependencies,
-// then alphabetically by ID. Uses the cached InstallsAfter field.
+// then alphabetically by ID. Uses Kahn's algorithm (BFS-based topological
+// sort) to correctly handle transitive dependencies.
 func sortFeatures(features []ResolvedFeature) {
-	// Build a set of OCI refs that each feature should come after
-	afterMap := make(map[string]map[string]bool)
-	for _, f := range features {
-		deps := make(map[string]bool)
-		for _, ref := range f.InstallsAfter {
-			deps[ref] = true
-		}
-		afterMap[f.ID] = deps
+	n := len(features)
+	if n <= 1 {
+		return
 	}
 
-	sort.SliceStable(features, func(i, j int) bool {
-		// If j should install after i, then i comes first
-		if afterMap[features[j].ID][features[i].Source] {
-			return true
+	// Fast path: if no features declare installsAfter dependencies,
+	// a simple alphabetical sort is sufficient.
+	hasDeps := false
+	for _, f := range features {
+		if len(f.InstallsAfter) > 0 {
+			hasDeps = true
+			break
 		}
-		// If i should install after j, then j comes first
-		if afterMap[features[i].ID][features[j].Source] {
-			return false
+	}
+	if !hasDeps {
+		sort.Slice(features, func(i, j int) bool {
+			return features[i].ID < features[j].ID
+		})
+		return
+	}
+
+	// Map each OCI Source ref to its index in the features slice.
+	// This lets us resolve InstallsAfter refs to concrete features.
+	sourceToIdx := make(map[string]int, n)
+	for i, f := range features {
+		sourceToIdx[f.Source] = i
+	}
+
+	// Build adjacency list and in-degree counts.
+	// If feature B has InstallsAfter containing source of A,
+	// then A must come before B: edge A -> B.
+	adj := make([][]int, n)
+	inDeg := make([]int, n)
+	for i, f := range features {
+		for _, depRef := range f.InstallsAfter {
+			if j, ok := sourceToIdx[depRef]; ok {
+				adj[j] = append(adj[j], i)
+				inDeg[i]++
+			}
 		}
-		// Alphabetical fallback
-		return features[i].ID < features[j].ID
-	})
+	}
+
+	// Initialize min-heap with all features that have in-degree 0.
+	h := &featureHeap{features: features}
+	heap.Init(h)
+	for i := 0; i < n; i++ {
+		if inDeg[i] == 0 {
+			heap.Push(h, i)
+		}
+	}
+
+	// BFS: pop the alphabetically-first feature with in-degree 0,
+	// append it to the result, and decrement in-degrees of its dependents.
+	// Track visited indices so the cycle fallback doesn't depend on Source uniqueness.
+	visited := make(map[int]bool, n)
+	result := make([]ResolvedFeature, 0, n)
+	for h.Len() > 0 {
+		idx := heap.Pop(h).(int)
+		visited[idx] = true
+		result = append(result, features[idx])
+		for _, neighbor := range adj[idx] {
+			inDeg[neighbor]--
+			if inDeg[neighbor] == 0 {
+				heap.Push(h, neighbor)
+			}
+		}
+	}
+
+	// If there's a cycle, some features won't appear in result.
+	// Append any remaining features alphabetically so nothing is lost.
+	if len(result) < n {
+		var remaining []ResolvedFeature
+		for i, f := range features {
+			if !visited[i] {
+				remaining = append(remaining, f)
+			}
+		}
+		sort.Slice(remaining, func(i, j int) bool {
+			return remaining[i].ID < remaining[j].ID
+		})
+		result = append(result, remaining...)
+	}
+
+	// Copy result back into the original slice (in-place sort).
+	copy(features, result)
+}
+
+// writeFeatureFiles generates the devcontainer-features.env (options) and
+// devcontainer-features-install.sh (wrapper) files in the feature directory.
+// This matches how the official devcontainer CLI passes options to install.sh:
+// options go in an env file that the wrapper sources before running install.sh,
+// so they're available during installation but don't persist as image ENV vars.
+func writeFeatureFiles(featureDir string, opts map[string]interface{}) error {
+	// Write devcontainer-features.env with options as env vars.
+	var envBuf strings.Builder
+	if len(opts) > 0 {
+		keys := make([]string, 0, len(opts))
+		for k := range opts {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			envBuf.WriteString(fmt.Sprintf("%s=%q\n", safeOptionEnvName(k), fmt.Sprintf("%v", opts[k])))
+		}
+	}
+	if err := os.WriteFile(filepath.Join(featureDir, "devcontainer-features.env"), []byte(envBuf.String()), 0644); err != nil {
+		return fmt.Errorf("writing env file: %w", err)
+	}
+
+	// Write devcontainer-features-install.sh wrapper that sources the env
+	// file then runs the feature's install.sh.
+	wrapper := "#!/bin/sh\nset -e\nset -a\n. ./devcontainer-features.env\nset +a\nchmod +x ./install.sh\n./install.sh\n"
+	if err := os.WriteFile(filepath.Join(featureDir, "devcontainer-features-install.sh"), []byte(wrapper), 0755); err != nil {
+		return fmt.Errorf("writing wrapper script: %w", err)
+	}
+
+	return nil
+}
+
+// nonWordRe matches characters that are not alphanumeric or underscore.
+var nonWordRe = regexp.MustCompile(`[^0-9A-Za-z_]`)
+
+// leadingNonAlphaRe matches leading digits and underscores.
+var leadingNonAlphaRe = regexp.MustCompile(`^[0-9_]+`)
+
+// safeOptionEnvName converts a feature option key to the environment variable
+// name expected by install.sh, matching the devcontainer spec's getSafeId:
+// replace non-word chars with _, strip leading digits/underscores, uppercase.
+// e.g. "version" -> "VERSION", "golangciLintVersion" -> "GOLANGCILINTVERSION"
+func safeOptionEnvName(key string) string {
+	s := nonWordRe.ReplaceAllString(key, "_")
+	s = leadingNonAlphaRe.ReplaceAllString(s, "_")
+	return strings.ToUpper(s)
+}
+
+// safeFeatureDirName extracts a filesystem-safe directory name from an OCI
+// reference like "ghcr.io/devcontainers/features/go:1". It takes the last
+// path segment and strips the tag (e.g. "go"). This avoids Windows failures
+// from : and / in directory names.
+func safeFeatureDirName(ociRef string) string {
+	// Strip tag/digest (everything after the last ":")
+	if idx := strings.LastIndex(ociRef, ":"); idx != -1 {
+		ociRef = ociRef[:idx]
+	}
+	// Take last path segment
+	if idx := strings.LastIndex(ociRef, "/"); idx != -1 {
+		return ociRef[idx+1:]
+	}
+	return ociRef
 }

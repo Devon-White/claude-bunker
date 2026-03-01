@@ -34,13 +34,13 @@ func runPrune(cmd *cobra.Command, args []string) error {
 
 	cli, err := container.NewClient()
 	if err != nil {
-		die(err.Error())
+		return fmt.Errorf("docker client: %w", err)
 	}
 	defer cli.Close()
 
 	volumes, err := container.ListBunkerVolumesDetailed(ctx, cli)
 	if err != nil {
-		die("Failed to list volumes: " + err.Error())
+		return fmt.Errorf("failed to list volumes: %w", err)
 	}
 
 	if len(volumes) == 0 {

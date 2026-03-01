@@ -72,6 +72,9 @@ type runner struct {
 	apiKey        string
 	oauthToken    string
 
+	execID string // Docker exec ID from ExecInteractive, used for cleanup session detection
+	reused bool   // true when attaching to an already-running container with matching fingerprints
+
 	// Computed during resolveContainer, reused in buildAndCreate for fingerprint saving.
 	dockerfile      string
 	scripts         map[string][]byte
@@ -92,6 +95,7 @@ func (r *runner) cleanup() {
 	r.cleanedUp = true
 	cID := r.containerID
 	cName := r.containerName
+	eID := r.execID
 	cli := r.cli
 	r.mu.Unlock()
 
@@ -102,17 +106,8 @@ func (r *runner) cleanup() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// Poll briefly for Docker to update its process list after the exec
-	// session exits.
-	for i := 0; i < 5; i++ {
-		if !container.HasActiveSessions(ctx, cli, cID) {
-			break
-		}
-		if i == 4 {
-			// Other sessions still active — leave the container running
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
+	if container.HasOtherActiveSessions(ctx, cli, cID, eID) {
+		return
 	}
 
 	info("Stopping sandbox...")
@@ -250,7 +245,11 @@ func runInSandbox(passedArgs []string, execCmd string) error {
 		verbose("Container will be kept running after exit (--keep)")
 	}
 
-	r.seedSettings()
+	// Only seed settings on fresh containers. When reusing a running container
+	// with matching fingerprints, settings are already correct from first start.
+	if !r.reused {
+		r.seedSettings()
+	}
 	r.setupSignals()
 
 	exitCode := r.exec(execCmd, flags.remaining)
@@ -296,6 +295,7 @@ func (r *runner) resolveContainer() {
 	r.scripts = map[string][]byte{
 		"init-firewall.sh": container.InitFirewallScript(),
 		"tmux.conf":        container.TmuxConf(),
+		"zshrc":            container.ZshRC(),
 	}
 
 	// Load cached base image digest (if any) so fingerprint comparison works
@@ -307,6 +307,19 @@ func (r *runner) resolveContainer() {
 	if id, running := container.ContainerRunning(r.ctx, r.cli, r.containerName); running {
 		if r.fpResult.ImageMatch && r.fpResult.ContainerMatch {
 			r.containerID = id
+			r.reused = true
+			return
+		}
+		// Config changed, but don't kill active sessions — reuse the container
+		// and let the changes take effect on the next clean start.
+		if container.HasAnyActiveSessions(r.ctx, r.cli, id) {
+			if r.fpResult.ImageMatch {
+				warn("Config changed but sandbox has active sessions — restart to apply")
+			} else {
+				warn("Image config changed but sandbox has active sessions — restart to apply")
+			}
+			r.containerID = id
+			r.reused = true
 			return
 		}
 		if r.fpResult.ImageMatch {
@@ -330,7 +343,7 @@ func (r *runner) buildAndCreate() {
 
 	if needImageBuild {
 		info("Building sandbox...")
-		result, err := container.BuildImage(r.ctx, r.cli, r.imageTag, needImageBuild, r.projectCfg, Version)
+		result, err := container.BuildImage(r.ctx, r.cli, r.imageTag, verbosity >= 1, r.projectCfg, Version)
 		if err != nil {
 			die("Failed to build sandbox: " + err.Error())
 		}
@@ -356,7 +369,7 @@ func (r *runner) buildAndCreate() {
 
 	if err := container.RunPostStart(r.ctx, r.cli, r.containerID, container.RunPostStartOpts{
 		ExtraDomains:      r.extraDomains,
-		PostCreateCommand: r.projectCfg.PostCreateCommand,
+		PostStartCommand:  r.projectCfg.PostStartCommand,
 		GhToken:           r.ghToken,
 		ApiKey:            r.apiKey,
 		OAuthToken:        r.oauthToken,
@@ -428,7 +441,12 @@ func (r *runner) exec(execCmd string, passedArgs []string) int {
 		info("Opening shell...")
 	}
 
-	exitCode, err := container.ExecInteractive(r.ctx, r.cli, r.containerID, container.ContainerUser, execCommand)
+	exitCode, execID, err := container.ExecInteractive(r.ctx, r.cli, r.containerID, container.ContainerUser, execCommand)
+
+	r.mu.Lock()
+	r.execID = execID
+	r.mu.Unlock()
+
 	if err != nil {
 		warn("Exec failed: " + err.Error())
 		exitCode = 1

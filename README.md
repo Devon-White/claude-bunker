@@ -295,9 +295,7 @@ Place a `.claude/.claude-bunker/config.json` in your project to customize contai
     "ghcr.io/devcontainers/features/node:1": {"version": "20"}
   },
   "env": {"PYTHONDONTWRITEBYTECODE": "1"},
-  "postCreateCommand": "pip install -r requirements.txt",
-  "ghToken": "ghp_...",
-  "seedHistory": true
+  "postStartCommand": "pip install -r requirements.txt"
 }
 ```
 
@@ -362,12 +360,12 @@ Environment variables injected into the container at creation time.
 { "env": {"PYTHONDONTWRITEBYTECODE": "1", "NODE_ENV": "development"} }
 ```
 
-#### postCreateCommand
+#### postStartCommand
 
 A shell command that runs after the container is created (after the firewall is configured). Runs as the `claude-bunker` user inside `/workspace`.
 
 ```json
-{ "postCreateCommand": "pip install -r requirements.txt && npm install" }
+{ "postStartCommand": "pip install -r requirements.txt && npm install" }
 ```
 
 **Trust boundary:** This command comes from the project's `config.json`, which lives inside the cloned repository. A malicious `config.json` can execute arbitrary shell commands here -- this is inherent to the devcontainer model (VS Code has the same trust issue). Review `config.json` before running claude-bunker on untrusted repos. The firewall limits blast radius by restricting network access.
@@ -419,22 +417,39 @@ Useful tmux bindings:
 
 ### Adding tools to the container
 
-The simplest approach is to use the `apt` field in your project's `config.json`:
+There are three ways to add tools, from simplest to most flexible:
+
+**1. apt packages** -- for system libraries and simple tools:
 
 ```json
-{ "apt": ["python3", "python3-pip"] }
+{ "apt": ["python3", "python3-pip", "ripgrep", "libsqlite3-dev"] }
 ```
 
-For more complex setups, fork the repo and edit `.devcontainer/Dockerfile`:
+**2. Devcontainer features** -- for language runtimes and complex toolchains:
 
-```dockerfile
-# Example: add custom tooling
-RUN apt-get update && apt-get install -y --no-install-recommends \
-  your-package \
-  && apt-get clean && rm -rf /var/lib/apt/lists/*
+```json
+{
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": { "version": "1.22" },
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" },
+    "ghcr.io/devcontainers/features/rust:1": {}
+  }
+}
 ```
 
-The next `claude-bunker` run will detect the change and rebuild automatically.
+Features are OCI packages from the [devcontainer features registry](https://containers.dev/features). Each feature bundles an `install.sh` script that handles version management, PATH setup, and dependencies. Browse the registry to find the feature reference for your toolchain -- the key is the full OCI image reference and the value is an object of options (check each feature's documentation for available options).
+
+Features are installed in dependency order during image build. The image is cached, so subsequent runs skip installation.
+
+**3. postStartCommand** -- for project-specific setup that depends on your source code:
+
+```json
+{ "postStartCommand": "pip install -r requirements.txt && npm install" }
+```
+
+This runs after the container starts, every time. Use it for installing project dependencies, not for installing tools (those belong in `apt` or `features` so they're cached in the image).
+
+**Choosing between them:** Use `apt` for system packages (`ffmpeg`, `libssl-dev`). Use `features` for language runtimes and toolchains (`go`, `node`, `rust`, `python`). Use `postStartCommand` for project dependency installation (`npm install`, `pip install`). All three can be combined in the same `config.json`.
 
 ### Adding allowed domains
 
@@ -446,25 +461,7 @@ The next `claude-bunker` run will detect the change and rebuild automatically.
 
 This adds domains to both the firewall and sandbox settings automatically. No forking required.
 
-**Globally (all projects):** Edit `.devcontainer/init-firewall.sh` and add domains to the resolution loop.
-
-### Pinning the Claude Code version
-
-Set the build arg in `.devcontainer/devcontainer.json`:
-
-```json
-{
-  "build": {
-    "args": {
-      "CLAUDE_CODE_VERSION": "1.0.5"
-    }
-  }
-}
-```
-
-### Using with VS Code Remote Containers
-
-The `.devcontainer/devcontainer.json` is a standard devcontainer config. You can open any project in VS Code, point it at claude-bunker's devcontainer.json, and get the same sandboxed environment with the Claude Code extension pre-installed.
+**Globally (all projects):** The firewall allowlist is compiled into the Go binary. To customize it globally, fork the repo and edit `internal/container/scripts/init-firewall.sh`.
 
 ## Environment variables
 
@@ -474,8 +471,7 @@ The `.devcontainer/devcontainer.json` is a standard devcontainer config. You can
 | `CLAUDE_BUNKER_QUIET` | unset | Set to `1` to suppress informational output (same as `--quiet`) |
 | `ANTHROPIC_API_KEY` | unset | Anthropic API key (read by claude-bunker if `--api-key` not provided) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | unset | Claude Code OAuth token (read if `--oauth-token` not provided) |
-| `TZ` | `America/Los_Angeles` | Container timezone |
-| `CLAUDE_CODE_VERSION` | `latest` | Claude Code version to install (Dockerfile build arg) |
+| `TZ` | `UTC` | Container timezone |
 
 ## Platform support
 
@@ -530,22 +526,18 @@ claude-bunker requires Docker to be running. On first use, it checks for the Doc
 ```
 claude-bunker/
   main.go                             # Entry point
-  cmd/                                # CLI commands (root, shell, prune, status, completion, version)
+  cmd/                                # CLI commands (root, shell, init, prune, status, version)
   internal/
     config/                           # Configuration loading, fingerprinting, naming
     container/                        # Docker API (build, create, exec, copy)
+      scripts/                        # Embedded scripts (init-firewall.sh, tmux.conf, zshrc)
     sandbox/                          # Sandbox settings seeding
     platform/                         # Platform-specific helpers (TTY, paths)
-  .devcontainer/
-    devcontainer.json                 # Container config (also usable with VS Code)
-    Dockerfile                        # Image definition (tools, Claude Code, managed-settings.json)
-    init-firewall.sh                  # iptables firewall setup + verification
-    .tmux.conf                        # tmux configuration for agent teams
   .goreleaser.yml                     # Release automation
   .gitattributes                      # LF line endings for shell scripts
   .gitignore                          # Ignores .env, .claude/, etc.
 
-# In your project (created automatically or by you):
+# In your project (created by `claude-bunker init` or manually):
 your-project/
   .claude/
     .claude-bunker/

@@ -9,6 +9,11 @@ import (
 // GenerateDockerfile appends apt packages, feature install layers, and user
 // env vars to the base Dockerfile. The generated Dockerfile always ends with
 // USER claude-bunker to ensure the container runs as the unprivileged user.
+//
+// Feature layers follow the devcontainer spec: containerEnv is emitted as ENV
+// instructions BEFORE the install script runs (so PATH is available during
+// installation), and options are passed via a sourced env file rather than
+// persisted as image ENV vars.
 func GenerateDockerfile(baseDockerfile string, features []ResolvedFeature, aptPackages []string, userEnv map[string]string) (string, error) {
 	var b strings.Builder
 	b.WriteString(baseDockerfile)
@@ -36,21 +41,22 @@ func GenerateDockerfile(baseDockerfile string, features []ResolvedFeature, aptPa
 	for _, f := range features {
 		b.WriteString(fmt.Sprintf("\n# Feature: %s (%s)\n", f.ID, f.Source))
 
-		// Set feature options as ENV vars (per devcontainer feature spec)
-		if len(f.Options) > 0 {
-			keys := sortedKeys(f.Options)
-			for _, k := range keys {
-				v := fmt.Sprintf("%v", f.Options[k])
-				envName := strings.NewReplacer("-", "_").Replace(strings.ToUpper(f.ID)) + "_" + strings.ToUpper(k)
-				b.WriteString(fmt.Sprintf("ENV %s=%q\n", envName, v))
+		// containerEnv BEFORE install — per the devcontainer spec, these ENV
+		// instructions (especially PATH) must be available during install.sh.
+		// Features use plain ${PATH} which Docker expands natively.
+		if len(f.Env) > 0 {
+			envKeys := sortedStringMapKeys(f.Env)
+			for _, k := range envKeys {
+				b.WriteString(fmt.Sprintf("ENV %s=%q\n", k, f.Env[k]))
 			}
 		}
 
-		// Copy feature files and run install.sh as root
-		b.WriteString(fmt.Sprintf("COPY _features/%s/ /tmp/features/%s/\n", f.ID, f.ID))
+		// Copy feature files (includes devcontainer-features.env with options
+		// and devcontainer-features-install.sh wrapper) and run as root.
+		b.WriteString(fmt.Sprintf("COPY _features/%s/ /tmp/dev-container-features/%s/\n", f.ID, f.ID))
 		b.WriteString("USER root\n")
-		b.WriteString(fmt.Sprintf("RUN chmod +x /tmp/features/%s/install.sh && /tmp/features/%s/install.sh && rm -rf /tmp/features/%s\n",
-			f.ID, f.ID, f.ID))
+		b.WriteString(fmt.Sprintf("RUN cd /tmp/dev-container-features/%s && chmod +x ./devcontainer-features-install.sh && ./devcontainer-features-install.sh && rm -rf /tmp/dev-container-features/%s\n",
+			f.ID, f.ID))
 	}
 
 	// Append user-defined env vars
@@ -66,14 +72,15 @@ func GenerateDockerfile(baseDockerfile string, features []ResolvedFeature, aptPa
 		}
 	}
 
-	// Always end with the unprivileged user
-	b.WriteString(fmt.Sprintf("\nUSER %s\n", ContainerUser))
+	// Restore working directory and end with the unprivileged user
+	b.WriteString("\nWORKDIR /workspace\n")
+	b.WriteString(fmt.Sprintf("USER %s\n", ContainerUser))
 
 	return b.String(), nil
 }
 
-// sortedKeys returns the keys of a map sorted alphabetically.
-func sortedKeys(m map[string]interface{}) []string {
+// sortedStringMapKeys returns the keys of a string map sorted alphabetically.
+func sortedStringMapKeys(m map[string]string) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

@@ -52,8 +52,12 @@ func TestLoadProjectConfig_Valid(t *testing.T) {
 	if cfg.Env["PYTHONDONTWRITEBYTECODE"] != "1" {
 		t.Errorf("env PYTHONDONTWRITEBYTECODE = %q", cfg.Env["PYTHONDONTWRITEBYTECODE"])
 	}
-	if cfg.PostCreateCommand != "pip install -r requirements.txt" {
-		t.Errorf("postCreateCommand = %q", cfg.PostCreateCommand)
+	// Backward compat: postCreateCommand in JSON should be migrated to PostStartCommand
+	if cfg.PostStartCommand != "pip install -r requirements.txt" {
+		t.Errorf("PostStartCommand = %q, want %q", cfg.PostStartCommand, "pip install -r requirements.txt")
+	}
+	if cfg.PostCreateCommand != "" {
+		t.Errorf("PostCreateCommand should be empty after migration, got %q", cfg.PostCreateCommand)
 	}
 }
 
@@ -92,8 +96,11 @@ func TestValidateDomains(t *testing.T) {
 		{[]string{"*.org"}, "too broad wildcard TLD"},
 		{[]string{"*"}, "bare wildcard"},
 		{[]string{"com"}, "single segment"},
+		{[]string{"localhost"}, "single segment localhost"},
 		{[]string{"foo..bar"}, "empty segment"},
 		{[]string{"good.example.com", ""}, "second entry empty"},
+		{[]string{"*github.com"}, "malformed wildcard missing dot"},
+		{[]string{"*example.org"}, "malformed wildcard missing dot"},
 	}
 	for _, tt := range invalid {
 		if err := validateDomains(tt.domains); err == nil {

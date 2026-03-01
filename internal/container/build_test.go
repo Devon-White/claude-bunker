@@ -8,47 +8,18 @@ import (
 	"testing"
 )
 
-func TestStripTrailingUser_RemovesLastUser(t *testing.T) {
-	input := "FROM debian:bookworm-slim\nRUN echo hello\nUSER claude-bunker\n"
-	got := stripTrailingUser(input)
-	want := "FROM debian:bookworm-slim\nRUN echo hello\n"
-	if got != want {
-		t.Errorf("stripTrailingUser() = %q, want %q", got, want)
+func TestGenerateBaseContent_NoTrailingUser(t *testing.T) {
+	content := generateBaseContent()
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	lastNonEmpty := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			lastNonEmpty = strings.TrimSpace(lines[i])
+			break
+		}
 	}
-}
-
-func TestStripTrailingUser_NoUser(t *testing.T) {
-	input := "FROM debian:bookworm-slim\nRUN echo hello\n"
-	got := stripTrailingUser(input)
-	if got != input {
-		t.Errorf("stripTrailingUser() modified input without USER line: %q", got)
-	}
-}
-
-func TestStripTrailingUser_UserInMiddle(t *testing.T) {
-	// USER in middle should NOT be removed (only trailing USER matters)
-	input := "FROM debian:bookworm-slim\nUSER root\nRUN echo hello"
-	got := stripTrailingUser(input)
-	if got != input {
-		t.Errorf("stripTrailingUser() should not remove non-trailing USER: %q", got)
-	}
-}
-
-func TestStripTrailingUser_TrailingWhitespace(t *testing.T) {
-	input := "FROM debian:bookworm-slim\nRUN echo hello\nUSER claude-bunker\n\n"
-	got := stripTrailingUser(input)
-	want := "FROM debian:bookworm-slim\nRUN echo hello\n\n"
-	if got != want {
-		t.Errorf("stripTrailingUser() = %q, want %q", got, want)
-	}
-}
-
-func TestStripTrailingUser_CaseInsensitive(t *testing.T) {
-	input := "FROM debian:bookworm-slim\nuser root\n"
-	got := stripTrailingUser(input)
-	want := "FROM debian:bookworm-slim\n"
-	if got != want {
-		t.Errorf("stripTrailingUser() should handle lowercase USER: got %q, want %q", got, want)
+	if strings.HasPrefix(strings.ToUpper(lastNonEmpty), "USER ") {
+		t.Errorf("generateBaseContent() should not end with USER, got %q", lastNonEmpty)
 	}
 }
 
@@ -67,6 +38,7 @@ func TestGenerateBaseDockerfile_ContainsKeyElements(t *testing.T) {
 		{"iptables", "iptables"},
 		{"firewall COPY", "COPY init-firewall.sh"},
 		{"tmux COPY", "COPY tmux.conf"},
+		{"zshrc COPY", "COPY zshrc"},
 		{"managed-settings dir", "/etc/claude-code"},
 		{"Claude Code install", "claude.ai/install.sh"},
 		{"USER claude-bunker", "USER claude-bunker"},
@@ -83,6 +55,11 @@ func TestGenerateBaseDockerfile_ContainsKeyElements(t *testing.T) {
 	// Verify wget is NOT in apt-get install
 	if strings.Contains(df, "wget") {
 		t.Error("Dockerfile should not contain wget (optimization: only curl is needed)")
+	}
+
+	// Verify Oh My Zsh / zsh-in-docker is not used
+	if strings.Contains(df, "zsh-in-docker") {
+		t.Error("Dockerfile should not use zsh-in-docker (replaced with minimal .zshrc)")
 	}
 }
 
@@ -124,6 +101,7 @@ func TestBuildContextTar_ContainsExpectedFiles(t *testing.T) {
 		"Dockerfile":       false,
 		"init-firewall.sh": false,
 		"tmux.conf":        false,
+		"zshrc":            false,
 	}
 
 	for _, name := range entries {

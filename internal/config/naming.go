@@ -45,7 +45,7 @@ func ContainerName(workspace string) string {
 	// 8-char hash of the full path for uniqueness
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(abs)))[:8]
 
-	return "claude-bunker-" + name + "-" + hash
+	return name + "-" + hash
 }
 
 // BashHistoryVolume returns the volume name for bash history persistence.

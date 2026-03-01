@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -93,7 +94,7 @@ func ImageFingerprint(dockerfile string, scripts map[string][]byte, projectCfg P
 
 // ContainerFingerprint computes a SHA-256 hash of inputs that affect container
 // creation but NOT the Docker image: allowDomains, workspace path, exclude
-// paths, and postCreateCommand.
+// paths, and postStartCommand.
 //
 // Changes to container-only inputs require container recreation but not an
 // image rebuild, saving significant time.
@@ -123,9 +124,9 @@ func ContainerFingerprint(projectCfg ProjectConfig) string {
 		h.Write([]byte(strings.Join(sorted, ",")))
 	}
 
-	// PostCreateCommand runs at container start
-	if projectCfg.PostCreateCommand != "" {
-		h.Write([]byte("postcreate:" + projectCfg.PostCreateCommand))
+	// PostStartCommand runs at container start
+	if projectCfg.PostStartCommand != "" {
+		h.Write([]byte("poststart:" + projectCfg.PostStartCommand))
 	}
 
 	return fmt.Sprintf("%x", h.Sum(nil))
@@ -265,33 +266,13 @@ func SaveBaseImageDigest(containerName, digest string) error {
 func EffectiveWorkdir(cfg ProjectConfig) (string, error) {
 	if cfg.Workspace != "" && cfg.Workspace != "." {
 		sub := strings.TrimPrefix(cfg.Workspace, "./")
-		result := cleanPath("/workspace/" + sub)
+		result := path.Clean("/workspace/" + sub)
 		if result != "/workspace" && !strings.HasPrefix(result, "/workspace/") {
 			return "", fmt.Errorf("workspace path %q resolves to %q, which is outside /workspace/", cfg.Workspace, result)
 		}
 		return result, nil
 	}
 	return "/workspace", nil
-}
-
-// cleanPath is a forward-slash-aware path cleaner (path.Clean equivalent).
-func cleanPath(p string) string {
-	// Use path.Clean for forward-slash paths
-	parts := strings.Split(p, "/")
-	var cleaned []string
-	for _, part := range parts {
-		switch part {
-		case "", ".":
-			continue
-		case "..":
-			if len(cleaned) > 0 {
-				cleaned = cleaned[:len(cleaned)-1]
-			}
-		default:
-			cleaned = append(cleaned, part)
-		}
-	}
-	return "/" + strings.Join(cleaned, "/")
 }
 
 // ExtraDomains returns a comma-separated string of extra allowed domains.
