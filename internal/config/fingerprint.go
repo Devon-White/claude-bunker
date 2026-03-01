@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,39 +12,25 @@ import (
 // ImageFingerprint computes a SHA-256 hash of all inputs that affect the Docker
 // image build: the generated Dockerfile, embedded scripts, apt packages,
 // features config, and user env vars baked into the image.
-//
-// When baseImageDigest is non-empty (pre-built image was pulled), it is hashed
-// instead of the Dockerfile+scripts, since the remote image replaces local build.
-//
-// Only changes to image-affecting inputs trigger an image rebuild.
-func ImageFingerprint(dockerfile string, scripts map[string][]byte, projectCfg ProjectConfig, baseImageDigest string) string {
+func ImageFingerprint(dockerfile string, scripts map[string][]byte, projectCfg ProjectConfig) string {
 	h := sha256.New()
 
-	// If a pre-built base image was used, hash its digest instead of
-	// the Dockerfile and scripts (they're baked into the remote image).
-	if baseImageDigest != "" {
-		h.Write([]byte("base-image-digest:"))
-		h.Write([]byte(baseImageDigest))
-	} else {
-		// Hash the generated Dockerfile (includes version constants, TZ placement, etc.)
-		h.Write([]byte("dockerfile:"))
-		h.Write([]byte(dockerfile))
+	// Hash the generated Dockerfile
+	h.Write([]byte("dockerfile:"))
+	h.Write([]byte(dockerfile))
 
-		// Hash embedded scripts in deterministic order
-		scriptNames := make([]string, 0, len(scripts))
-		for name := range scripts {
-			scriptNames = append(scriptNames, name)
-		}
-		sort.Strings(scriptNames)
-		for _, name := range scriptNames {
-			h.Write([]byte("script:" + name + ":"))
-			h.Write(scripts[name])
-		}
+	// Hash embedded scripts in deterministic order
+	scriptNames := make([]string, 0, len(scripts))
+	for name := range scripts {
+		scriptNames = append(scriptNames, name)
+	}
+	sort.Strings(scriptNames)
+	for _, name := range scriptNames {
+		h.Write([]byte("script:" + name + ":"))
+		h.Write(scripts[name])
 	}
 
 	// Hash apt packages (sorted, since they affect the image)
-	// These are always hashed — they represent dynamic layers applied
-	// on top of either the pre-built base or the local base.
 	if len(projectCfg.Apt) > 0 {
 		sorted := make([]string, len(projectCfg.Apt))
 		copy(sorted, projectCfg.Apt)
@@ -135,8 +120,8 @@ func ContainerFingerprint(projectCfg ProjectConfig) string {
 // CombinedFingerprint produces a single fingerprint string that encodes both
 // image and container components, separated by ":". This is stored in the
 // cache file for comparison.
-func CombinedFingerprint(dockerfile string, scripts map[string][]byte, projectCfg ProjectConfig, baseImageDigest string) string {
-	imgFP := ImageFingerprint(dockerfile, scripts, projectCfg, baseImageDigest)
+func CombinedFingerprint(dockerfile string, scripts map[string][]byte, projectCfg ProjectConfig) string {
+	imgFP := ImageFingerprint(dockerfile, scripts, projectCfg)
 	ctrFP := ContainerFingerprint(projectCfg)
 	return imgFP + ":" + ctrFP
 }
@@ -150,8 +135,8 @@ type FingerprintResult struct {
 // CompareFingerprints computes current fingerprints and compares them against
 // the cached fingerprint for the given container name. Returns which components
 // match.
-func CompareFingerprints(dockerfile string, scripts map[string][]byte, projectCfg ProjectConfig, containerName string, baseImageDigest string) FingerprintResult {
-	currentImg := ImageFingerprint(dockerfile, scripts, projectCfg, baseImageDigest)
+func CompareFingerprints(dockerfile string, scripts map[string][]byte, projectCfg ProjectConfig, containerName string) FingerprintResult {
+	currentImg := ImageFingerprint(dockerfile, scripts, projectCfg)
 	currentCtr := ContainerFingerprint(projectCfg)
 
 	cached, err := LoadFingerprint(containerName)
@@ -172,8 +157,8 @@ func CompareFingerprints(dockerfile string, scripts map[string][]byte, projectCf
 }
 
 // SaveCombinedFingerprint computes and saves the combined fingerprint.
-func SaveCombinedFingerprint(dockerfile string, scripts map[string][]byte, projectCfg ProjectConfig, containerName string, baseImageDigest string) error {
-	fp := CombinedFingerprint(dockerfile, scripts, projectCfg, baseImageDigest)
+func SaveCombinedFingerprint(dockerfile string, scripts map[string][]byte, projectCfg ProjectConfig, containerName string) error {
+	fp := CombinedFingerprint(dockerfile, scripts, projectCfg)
 	return SaveFingerprint(containerName, fp)
 }
 
@@ -221,44 +206,16 @@ func SaveFingerprint(containerName, fingerprint string) error {
 	return os.WriteFile(p, []byte(fingerprint), 0644)
 }
 
-// BaseImageDigestPath returns the path to the cached base image digest for a container.
-func BaseImageDigestPath(containerName string) (string, error) {
-	dir, err := CacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, containerName+".base-digest"), nil
-}
-
-// LoadBaseImageDigest reads the cached base image digest for a container.
-// Returns "" if no digest is cached.
-func LoadBaseImageDigest(containerName string) string {
-	p, err := BaseImageDigestPath(containerName)
-	if err != nil {
-		return ""
-	}
-	data, err := os.ReadFile(p)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
-}
-
-// SaveBaseImageDigest writes the base image digest to cache.
-// Pass "" to clear the cached digest (e.g. when falling back to local build).
-func SaveBaseImageDigest(containerName, digest string) error {
-	p, err := BaseImageDigestPath(containerName)
+// ClearFingerprint deletes the cached fingerprint for a container.
+func ClearFingerprint(containerName string) error {
+	p, err := FingerprintPath(containerName)
 	if err != nil {
 		return err
 	}
-	if digest == "" {
-		os.Remove(p) // best effort
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return os.WriteFile(p, []byte(digest), 0644)
+	return nil
 }
 
 // EffectiveWorkdir returns the container working directory based on project config.
@@ -266,7 +223,7 @@ func SaveBaseImageDigest(containerName, digest string) error {
 func EffectiveWorkdir(cfg ProjectConfig) (string, error) {
 	if cfg.Workspace != "" && cfg.Workspace != "." {
 		sub := strings.TrimPrefix(cfg.Workspace, "./")
-		result := path.Clean("/workspace/" + sub)
+		result := filepath.Clean("/workspace/" + sub)
 		if result != "/workspace" && !strings.HasPrefix(result, "/workspace/") {
 			return "", fmt.Errorf("workspace path %q resolves to %q, which is outside /workspace/", cfg.Workspace, result)
 		}

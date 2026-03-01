@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -201,6 +202,9 @@ type RunPostStartOpts struct {
 // 5. Inject auth secrets (if provided)
 // 6. Run postStartCommand (if configured)
 func RunPostStart(ctx context.Context, cli *client.Client, containerID string, opts RunPostStartOpts) error {
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
 	// 1. Git safe directory
 	_, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
 		[]string{"git", "config", "--global", "--add", "safe.directory", "/workspace"})

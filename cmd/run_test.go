@@ -82,10 +82,17 @@ func TestExtractBunkerFlags(t *testing.T) {
 			},
 		},
 		{
-			name: "no-teardown is alias for keep",
+			name: "rebuild flag",
+			args: []string{"--rebuild"},
+			want: bunkerFlags{
+				rebuild: true,
+			},
+		},
+		{
+			name: "no-teardown is unknown flag (removed)",
 			args: []string{"--no-teardown"},
 			want: bunkerFlags{
-				keep: true,
+				remaining: []string{"--no-teardown"},
 			},
 		},
 		{
@@ -113,6 +120,7 @@ func TestExtractBunkerFlags(t *testing.T) {
 				"--verbose",
 				"--keep",
 				"--quiet",
+				"--rebuild",
 			},
 			want: bunkerFlags{
 				ghToken:    "ghp_abc",
@@ -121,6 +129,7 @@ func TestExtractBunkerFlags(t *testing.T) {
 				isVerbose:  true,
 				keep:       true,
 				quiet:      true,
+				rebuild:    true,
 			},
 		},
 		{
@@ -164,13 +173,6 @@ func TestExtractBunkerFlags(t *testing.T) {
 			},
 		},
 		{
-			name: "no-teardown and keep both set keep true",
-			args: []string{"--no-teardown", "--keep"},
-			want: bunkerFlags{
-				keep: true,
-			},
-		},
-		{
 			name: "only non-bunker flags all land in remaining",
 			args: []string{"-p", "do something", "--model", "sonnet"},
 			want: bunkerFlags{
@@ -200,6 +202,9 @@ func TestExtractBunkerFlags(t *testing.T) {
 			}
 			if got.keep != tt.want.keep {
 				t.Errorf("keep = %v, want %v", got.keep, tt.want.keep)
+			}
+			if got.rebuild != tt.want.rebuild {
+				t.Errorf("rebuild = %v, want %v", got.rebuild, tt.want.rebuild)
 			}
 			if !slices.Equal(got.remaining, tt.want.remaining) {
 				t.Errorf("remaining = %v, want %v", got.remaining, tt.want.remaining)

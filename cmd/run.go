@@ -72,14 +72,14 @@ type runner struct {
 	apiKey        string
 	oauthToken    string
 
-	execID string // Docker exec ID from ExecInteractive, used for cleanup session detection
-	reused bool   // true when attaching to an already-running container with matching fingerprints
+	execID  string // Docker exec ID from ExecInteractive, used for cleanup session detection
+	reused  bool   // true when attaching to an already-running container with matching fingerprints
+	noCache bool   // true when --rebuild is used; passed to Docker build as NoCache
 
 	// Computed during resolveContainer, reused in buildAndCreate for fingerprint saving.
-	dockerfile      string
-	scripts         map[string][]byte
-	fpResult        config.FingerprintResult
-	baseImageDigest string // set when pre-built image is pulled from GHCR
+	dockerfile string
+	scripts    map[string][]byte
+	fpResult   config.FingerprintResult
 }
 
 // cleanup stops and removes the container. Safe to call multiple times
@@ -128,7 +128,7 @@ func resolveWorkspace() string {
 }
 
 // bunkerFlags holds claude-bunker-specific flags extracted from the args
-// before the remaining args are passed through to claude/zsh.
+// before the remaining args are passed through to claude/bash.
 type bunkerFlags struct {
 	ghToken    string
 	apiKey     string
@@ -136,12 +136,13 @@ type bunkerFlags struct {
 	quiet      bool
 	isVerbose  bool
 	keep       bool
+	rebuild    bool
 	remaining  []string
 }
 
 // extractBunkerFlags pulls claude-bunker-specific flags from the arg list.
 // Flags: --gh-token, --api-key, --oauth-token (each takes a value).
-// Boolean flags: --verbose, --quiet, --keep, --no-teardown.
+// Boolean flags: --verbose, --quiet, --keep, --rebuild.
 // Returns the extracted values and the remaining args to pass through.
 func extractBunkerFlags(args []string) bunkerFlags {
 	var f bunkerFlags
@@ -151,10 +152,10 @@ func extractBunkerFlags(args []string) bunkerFlags {
 		"--oauth-token": &f.oauthToken,
 	}
 	boolFlags := map[string]*bool{
-		"--verbose":     &f.isVerbose,
-		"--quiet":       &f.quiet,
-		"--keep":        &f.keep,
-		"--no-teardown": &f.keep,
+		"--verbose": &f.isVerbose,
+		"--quiet":   &f.quiet,
+		"--keep":    &f.keep,
+		"--rebuild": &f.rebuild,
 	}
 
 	i := 0
@@ -234,6 +235,19 @@ func runInSandbox(passedArgs []string, execCmd string) error {
 
 	r.loadConfig(flags)
 	r.resolveNaming()
+
+	// Handle --rebuild: force a clean slate
+	if flags.rebuild {
+		r.noCache = true
+		info("Rebuild requested — clearing cache and removing existing image...")
+		_ = config.ClearFingerprint(r.containerName)
+		_ = container.RemoveImageByTag(r.ctx, r.cli, r.imageTag)
+		if id, err := container.FindByLabel(r.ctx, r.cli, r.containerName); err == nil && id != "" {
+			_ = container.Stop(r.ctx, r.cli, id)
+			_ = container.Remove(r.ctx, r.cli, id)
+		}
+	}
+
 	r.resolveContainer()
 
 	if r.containerID == "" {
@@ -295,14 +309,9 @@ func (r *runner) resolveContainer() {
 	r.scripts = map[string][]byte{
 		"init-firewall.sh": container.InitFirewallScript(),
 		"tmux.conf":        container.TmuxConf(),
-		"zshrc":            container.ZshRC(),
 	}
 
-	// Load cached base image digest (if any) so fingerprint comparison works
-	// correctly when the previous build used a pre-built GHCR image.
-	r.baseImageDigest = config.LoadBaseImageDigest(r.containerName)
-
-	r.fpResult = config.CompareFingerprints(r.dockerfile, r.scripts, r.projectCfg, r.containerName, r.baseImageDigest)
+	r.fpResult = config.CompareFingerprints(r.dockerfile, r.scripts, r.projectCfg, r.containerName)
 
 	if id, running := container.ContainerRunning(r.ctx, r.cli, r.containerName); running {
 		if r.fpResult.ImageMatch && r.fpResult.ContainerMatch {
@@ -343,11 +352,10 @@ func (r *runner) buildAndCreate() {
 
 	if needImageBuild {
 		info("Building sandbox...")
-		result, err := container.BuildImage(r.ctx, r.cli, r.imageTag, verbosity >= 1, r.projectCfg, Version)
+		err := container.BuildImage(r.ctx, r.cli, r.imageTag, verbosity >= 1, r.projectCfg, Version, r.noCache, info)
 		if err != nil {
 			die("Failed to build sandbox: " + err.Error())
 		}
-		r.baseImageDigest = result.BaseImageDigest
 	} else {
 		info("Starting sandbox...")
 	}
@@ -368,20 +376,17 @@ func (r *runner) buildAndCreate() {
 	r.containerID = id
 
 	if err := container.RunPostStart(r.ctx, r.cli, r.containerID, container.RunPostStartOpts{
-		ExtraDomains:      r.extraDomains,
-		PostStartCommand:  r.projectCfg.PostStartCommand,
-		GhToken:           r.ghToken,
-		ApiKey:            r.apiKey,
-		OAuthToken:        r.oauthToken,
+		ExtraDomains:     r.extraDomains,
+		PostStartCommand: r.projectCfg.PostStartCommand,
+		GhToken:          r.ghToken,
+		ApiKey:           r.apiKey,
+		OAuthToken:       r.oauthToken,
 	}); err != nil {
 		die("Post-start failed: " + err.Error())
 	}
 
-	if err := config.SaveCombinedFingerprint(r.dockerfile, r.scripts, r.projectCfg, r.containerName, r.baseImageDigest); err != nil {
+	if err := config.SaveCombinedFingerprint(r.dockerfile, r.scripts, r.projectCfg, r.containerName); err != nil {
 		warn("Failed to save fingerprint: " + err.Error())
-	}
-	if err := config.SaveBaseImageDigest(r.containerName, r.baseImageDigest); err != nil {
-		warn("Failed to save base image digest: " + err.Error())
 	}
 }
 

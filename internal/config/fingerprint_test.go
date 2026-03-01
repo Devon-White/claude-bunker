@@ -13,8 +13,8 @@ func TestImageFingerprint_Deterministic(t *testing.T) {
 	}
 	cfg := ProjectConfig{}
 
-	fp1 := ImageFingerprint(dockerfile, scripts, cfg, "")
-	fp2 := ImageFingerprint(dockerfile, scripts, cfg, "")
+	fp1 := ImageFingerprint(dockerfile, scripts, cfg)
+	fp2 := ImageFingerprint(dockerfile, scripts, cfg)
 	if fp1 != fp2 {
 		t.Errorf("fingerprints differ: %s vs %s", fp1, fp2)
 	}
@@ -26,8 +26,8 @@ func TestImageFingerprint_ChangesOnDockerfileChange(t *testing.T) {
 	}
 	cfg := ProjectConfig{}
 
-	fp1 := ImageFingerprint("FROM debian:bookworm-slim", scripts, cfg, "")
-	fp2 := ImageFingerprint("FROM debian:trixie-slim", scripts, cfg, "")
+	fp1 := ImageFingerprint("FROM debian:bookworm-slim", scripts, cfg)
+	fp2 := ImageFingerprint("FROM debian:trixie-slim", scripts, cfg)
 
 	if fp1 == fp2 {
 		t.Error("fingerprint should change when Dockerfile changes")
@@ -41,8 +41,8 @@ func TestImageFingerprint_ChangesOnScriptChange(t *testing.T) {
 	scripts1 := map[string][]byte{"init-firewall.sh": []byte("v1")}
 	scripts2 := map[string][]byte{"init-firewall.sh": []byte("v2")}
 
-	fp1 := ImageFingerprint(dockerfile, scripts1, cfg, "")
-	fp2 := ImageFingerprint(dockerfile, scripts2, cfg, "")
+	fp1 := ImageFingerprint(dockerfile, scripts1, cfg)
+	fp2 := ImageFingerprint(dockerfile, scripts2, cfg)
 
 	if fp1 == fp2 {
 		t.Error("fingerprint should change when script content changes")
@@ -56,8 +56,8 @@ func TestImageFingerprint_ChangesOnAptPackages(t *testing.T) {
 	cfg1 := ProjectConfig{Apt: []string{"vim"}}
 	cfg2 := ProjectConfig{Apt: []string{"vim", "curl"}}
 
-	fp1 := ImageFingerprint(dockerfile, scripts, cfg1, "")
-	fp2 := ImageFingerprint(dockerfile, scripts, cfg2, "")
+	fp1 := ImageFingerprint(dockerfile, scripts, cfg1)
+	fp2 := ImageFingerprint(dockerfile, scripts, cfg2)
 
 	if fp1 == fp2 {
 		t.Error("fingerprint should change when apt packages change")
@@ -83,8 +83,8 @@ func TestContainerFingerprint_DoesNotAffectImage(t *testing.T) {
 	cfg1 := ProjectConfig{AllowDomains: []string{"example.com"}}
 	cfg2 := ProjectConfig{AllowDomains: []string{"other.com"}}
 
-	imgFP1 := ImageFingerprint(dockerfile, scripts, cfg1, "")
-	imgFP2 := ImageFingerprint(dockerfile, scripts, cfg2, "")
+	imgFP1 := ImageFingerprint(dockerfile, scripts, cfg1)
+	imgFP2 := ImageFingerprint(dockerfile, scripts, cfg2)
 
 	if imgFP1 != imgFP2 {
 		t.Error("image fingerprint should NOT change when only domains change")
@@ -96,7 +96,7 @@ func TestCombinedFingerprint_Format(t *testing.T) {
 	scripts := map[string][]byte{}
 	cfg := ProjectConfig{}
 
-	fp := CombinedFingerprint(dockerfile, scripts, cfg, "")
+	fp := CombinedFingerprint(dockerfile, scripts, cfg)
 
 	// Should contain a colon separating image and container fingerprints
 	if len(fp) < 65 { // At minimum: 64 hex chars + ":" + some hex chars
@@ -126,13 +126,13 @@ func TestCompareFingerprints_FullMatch(t *testing.T) {
 	cfg := ProjectConfig{}
 
 	// Save fingerprint
-	err := SaveCombinedFingerprint(dockerfile, scripts, cfg, "test-container", "")
+	err := SaveCombinedFingerprint(dockerfile, scripts, cfg, "test-container")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Compare — should match both
-	result := CompareFingerprints(dockerfile, scripts, cfg, "test-container", "")
+	result := CompareFingerprints(dockerfile, scripts, cfg, "test-container")
 	if !result.ImageMatch {
 		t.Error("image fingerprint should match")
 	}
@@ -150,80 +150,19 @@ func TestCompareFingerprints_ContainerOnlyChange(t *testing.T) {
 	cfg1 := ProjectConfig{AllowDomains: []string{"example.com"}}
 
 	// Save with original config
-	err := SaveCombinedFingerprint(dockerfile, scripts, cfg1, "test-container", "")
+	err := SaveCombinedFingerprint(dockerfile, scripts, cfg1, "test-container")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Compare with changed domains (container-only change)
 	cfg2 := ProjectConfig{AllowDomains: []string{"other.com"}}
-	result := CompareFingerprints(dockerfile, scripts, cfg2, "test-container", "")
+	result := CompareFingerprints(dockerfile, scripts, cfg2, "test-container")
 	if !result.ImageMatch {
 		t.Error("image fingerprint should still match (only domains changed)")
 	}
 	if result.ContainerMatch {
 		t.Error("container fingerprint should NOT match (domains changed)")
-	}
-}
-
-func TestImageFingerprint_BaseImageDigest(t *testing.T) {
-	dockerfile := "FROM debian:bookworm-slim"
-	scripts := map[string][]byte{"init-firewall.sh": []byte("#!/bin/bash")}
-	cfg := ProjectConfig{}
-
-	// With no digest, should use dockerfile hash
-	fpLocal := ImageFingerprint(dockerfile, scripts, cfg, "")
-
-	// With a digest, should produce a different fingerprint
-	fpPulled := ImageFingerprint(dockerfile, scripts, cfg, "sha256:abc123")
-
-	if fpLocal == fpPulled {
-		t.Error("fingerprint with base image digest should differ from local build fingerprint")
-	}
-
-	// Same digest should produce same fingerprint
-	fpPulled2 := ImageFingerprint(dockerfile, scripts, cfg, "sha256:abc123")
-	if fpPulled != fpPulled2 {
-		t.Error("same base image digest should produce same fingerprint")
-	}
-
-	// Different digest should produce different fingerprint
-	fpPulled3 := ImageFingerprint(dockerfile, scripts, cfg, "sha256:def456")
-	if fpPulled == fpPulled3 {
-		t.Error("different base image digest should produce different fingerprint")
-	}
-}
-
-func TestSaveAndLoadBaseImageDigest(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-
-	// Initially no digest cached
-	digest := LoadBaseImageDigest("test-container")
-	if digest != "" {
-		t.Errorf("expected empty digest, got %q", digest)
-	}
-
-	// Save and load
-	err := SaveBaseImageDigest("test-container", "sha256:abc123")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	digest = LoadBaseImageDigest("test-container")
-	if digest != "sha256:abc123" {
-		t.Errorf("loaded digest = %q, want %q", digest, "sha256:abc123")
-	}
-
-	// Clear
-	err = SaveBaseImageDigest("test-container", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	digest = LoadBaseImageDigest("test-container")
-	if digest != "" {
-		t.Errorf("expected empty digest after clear, got %q", digest)
 	}
 }
 
@@ -242,6 +181,40 @@ func TestSaveAndLoadFingerprint(t *testing.T) {
 	}
 	if loaded != "abc123:def456" {
 		t.Errorf("loaded = %q, want %q", loaded, "abc123:def456")
+	}
+}
+
+func TestClearFingerprint(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Save a fingerprint
+	err := SaveFingerprint("test-container", "abc123:def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Clear it
+	err = ClearFingerprint("test-container")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should be gone
+	_, err = LoadFingerprint("test-container")
+	if err == nil {
+		t.Error("expected error loading cleared fingerprint")
+	}
+}
+
+func TestClearFingerprint_NonExistent(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Should not error when clearing non-existent fingerprint
+	err := ClearFingerprint("nonexistent-container")
+	if err != nil {
+		t.Errorf("ClearFingerprint should not error on non-existent: %v", err)
 	}
 }
 

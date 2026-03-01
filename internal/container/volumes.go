@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 
+	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 )
@@ -66,4 +68,45 @@ func ListBunkerVolumesDetailed(ctx context.Context, cli *client.Client) ([]Bunke
 // RemoveVolume removes a Docker volume by name.
 func RemoveVolume(ctx context.Context, cli *client.Client, name string) error {
 	return cli.VolumeRemove(ctx, name, false)
+}
+
+// BunkerImage holds information about a claude-bunker Docker image.
+type BunkerImage struct {
+	ID   string // short image ID
+	Tag  string // full tag (e.g. "claude-bunker:abc123")
+	Size int64  // size in bytes
+}
+
+// ListBunkerImages returns all Docker images with the claude-bunker: prefix.
+func ListBunkerImages(ctx context.Context, cli *client.Client) ([]BunkerImage, error) {
+	f := filters.NewArgs()
+	f.Add("reference", "claude-bunker:*")
+	imgs, err := cli.ImageList(ctx, image.ListOptions{Filters: f})
+	if err != nil {
+		return nil, err
+	}
+
+	var result []BunkerImage
+	for _, img := range imgs {
+		for _, tag := range img.RepoTags {
+			if strings.HasPrefix(tag, "claude-bunker:") {
+				shortID := img.ID
+				if strings.HasPrefix(shortID, "sha256:") && len(shortID) > 19 {
+					shortID = shortID[7:19]
+				}
+				result = append(result, BunkerImage{
+					ID:   shortID,
+					Tag:  tag,
+					Size: img.Size,
+				})
+			}
+		}
+	}
+	return result, nil
+}
+
+// RemoveImageByTag removes a Docker image by tag.
+func RemoveImageByTag(ctx context.Context, cli *client.Client, tag string) error {
+	_, err := cli.ImageRemove(ctx, tag, image.RemoveOptions{Force: true})
+	return err
 }

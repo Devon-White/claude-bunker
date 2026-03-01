@@ -38,12 +38,11 @@ func TestGenerateBaseDockerfile_ContainsKeyElements(t *testing.T) {
 		{"iptables", "iptables"},
 		{"firewall COPY", "COPY init-firewall.sh"},
 		{"tmux COPY", "COPY tmux.conf"},
-		{"zshrc COPY", "COPY zshrc"},
 		{"managed-settings dir", "/etc/claude-code"},
 		{"Claude Code install", "claude.ai/install.sh"},
 		{"USER claude-bunker", "USER claude-bunker"},
 		{"DEVCONTAINER env", "DEVCONTAINER=true"},
-		{"zsh shell", "SHELL=/bin/zsh"},
+		{"bash shell", "SHELL=/bin/bash"},
 	}
 
 	for _, c := range mustContain {
@@ -52,14 +51,33 @@ func TestGenerateBaseDockerfile_ContainsKeyElements(t *testing.T) {
 		}
 	}
 
-	// Verify wget is NOT in apt-get install
-	if strings.Contains(df, "wget") {
-		t.Error("Dockerfile should not contain wget (optimization: only curl is needed)")
+	// Verify removed packages are NOT in apt-get install
+	mustNotContain := []string{"wget", "nano", "sudo", "fzf", "aggregate", "jq", "zsh"}
+	for _, pkg := range mustNotContain {
+		// Check that the package doesn't appear as a standalone line in apt-get install
+		if strings.Contains(df, "  "+pkg+" \\") || strings.Contains(df, "  "+pkg+"\n") {
+			t.Errorf("Dockerfile should not contain package %q", pkg)
+		}
 	}
 
-	// Verify Oh My Zsh / zsh-in-docker is not used
-	if strings.Contains(df, "zsh-in-docker") {
-		t.Error("Dockerfile should not use zsh-in-docker (replaced with minimal .zshrc)")
+	// Verify zsh-specific items are removed
+	if strings.Contains(df, "COPY zshrc") {
+		t.Error("Dockerfile should not contain COPY zshrc")
+	}
+	if strings.Contains(df, "chsh") {
+		t.Error("Dockerfile should not contain chsh command")
+	}
+	if strings.Contains(df, "EDITOR=nano") {
+		t.Error("Dockerfile should not set EDITOR=nano")
+	}
+	if strings.Contains(df, "VISUAL=nano") {
+		t.Error("Dockerfile should not set VISUAL=nano")
+	}
+	if strings.Contains(df, "git-delta") || strings.Contains(df, "GIT_DELTA_VERSION") {
+		t.Error("Dockerfile should not contain git-delta references")
+	}
+	if strings.Contains(df, "sudoers") {
+		t.Error("Dockerfile should not contain sudoers references")
 	}
 }
 
@@ -82,7 +100,7 @@ func TestGenerateBaseDockerfile_SingleUserSwitch(t *testing.T) {
 	df := GenerateBaseDockerfile()
 
 	// Count USER claude-bunker occurrences — should be exactly 2:
-	// one before zsh/Claude installs, one at the end after COPY layers
+	// one before Claude Code install, one at the end after COPY layers
 	count := strings.Count(df, "USER claude-bunker")
 	if count != 2 {
 		t.Errorf("expected exactly 2 'USER claude-bunker' lines, got %d", count)
@@ -101,7 +119,6 @@ func TestBuildContextTar_ContainsExpectedFiles(t *testing.T) {
 		"Dockerfile":       false,
 		"init-firewall.sh": false,
 		"tmux.conf":        false,
-		"zshrc":            false,
 	}
 
 	for _, name := range entries {
@@ -113,6 +130,13 @@ func TestBuildContextTar_ContainsExpectedFiles(t *testing.T) {
 	for name, found := range expected {
 		if !found {
 			t.Errorf("tar archive missing expected file: %s", name)
+		}
+	}
+
+	// Verify zshrc is NOT in the tar archive
+	for _, name := range entries {
+		if name == "zshrc" {
+			t.Error("tar archive should not contain zshrc")
 		}
 	}
 }

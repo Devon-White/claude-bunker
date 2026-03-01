@@ -145,7 +145,7 @@ func printResolvedConfig(cfg config.ProjectConfig) {
 	}
 }
 
-// listActiveSessions returns the names of active interactive sessions (claude, zsh).
+// listActiveSessions returns the names of active interactive sessions (claude, bash).
 func listActiveSessions(ctx context.Context, cli interface {
 	ContainerTop(ctx context.Context, containerID string, arguments []string) (container.ContainerTopOKBody, error)
 }, containerID string) []string {
@@ -156,7 +156,7 @@ func listActiveSessions(ctx context.Context, cli interface {
 	counts := map[string]int{}
 	for _, proc := range top.Processes {
 		for _, field := range proc {
-			if field == "claude" || field == "zsh" {
+			if field == "claude" || field == "bash" {
 				counts[field]++
 			}
 		}

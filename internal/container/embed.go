@@ -22,12 +22,3 @@ func TmuxConf() []byte {
 	}
 	return data
 }
-
-// ZshRC returns the embedded zshrc content.
-func ZshRC() []byte {
-	data, err := embeddedScripts.ReadFile("scripts/zshrc")
-	if err != nil {
-		panic("embedded zshrc missing: " + err.Error())
-	}
-	return data
-}
