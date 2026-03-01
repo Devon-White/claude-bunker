@@ -1,0 +1,132 @@
+package cmd
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/spf13/cobra"
+
+	"github.com/Devon-White/claude-bunker/internal/container"
+)
+
+// Version is set via ldflags at build time.
+var Version = "dev"
+
+var rootCmd = &cobra.Command{
+	Use:   "claude-bunker [flags]",
+	Short: "Run Claude Code in a sandboxed container",
+	Long: `claude-bunker — Run Claude Code in a sandboxed container.
+
+The sandbox starts automatically and tears down when Claude exits.
+On first run the container image is built (takes a few minutes, cached
+after that). Configuration changes are detected automatically.`,
+	// Don't show errors twice (we handle them ourselves)
+	SilenceErrors: true,
+	SilenceUsage:  true,
+	// DisableFlagParsing lets unknown flags pass through to claude
+	DisableFlagParsing: true,
+	RunE:               runDefault,
+}
+
+func init() {
+	// Re-enable flag parsing for subcommands
+	shellCmd.DisableFlagParsing = false
+	pruneCmd.DisableFlagParsing = false
+	statusCmd.DisableFlagParsing = false
+	initCmd.DisableFlagParsing = false
+	logsCmd.DisableFlagParsing = false
+	completionCmd.DisableFlagParsing = false
+
+	// Add --verbose/--quiet flags to subcommands (root command handles
+	// these via extractBunkerFlags since its flag parsing is disabled).
+	for _, cmd := range []*cobra.Command{shellCmd, pruneCmd, statusCmd, initCmd, logsCmd} {
+		cmd.Flags().BoolP("verbose", "V", false, "Show detailed output")
+		cmd.Flags().BoolP("quiet", "q", false, "Suppress informational output")
+	}
+
+	rootCmd.AddCommand(shellCmd)
+	rootCmd.AddCommand(pruneCmd)
+	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(logsCmd)
+	rootCmd.AddCommand(completionCmd)
+	rootCmd.AddCommand(versionCmd)
+}
+
+// initVerbosity sets the verbosity level from cobra flags or the CLAUDE_BUNKER_QUIET env var.
+// Call from subcommand RunE functions before any output.
+func initVerbosity(cmd *cobra.Command) {
+	if q, _ := cmd.Flags().GetBool("quiet"); q || os.Getenv("CLAUDE_BUNKER_QUIET") == "1" {
+		verbosity = -1
+	} else if v, _ := cmd.Flags().GetBool("verbose"); v {
+		verbosity = 1
+	}
+}
+
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print the version",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("claude-bunker", Version)
+	},
+}
+
+// Execute runs the root command.
+func Execute() error {
+	// Intercept help flags before cobra sees them (since flag parsing is disabled on root)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "help", "-h", "--help":
+			rootCmd.DisableFlagParsing = false
+			rootCmd.SetArgs([]string{"--help"})
+		case "version", "--version", "-v":
+			fmt.Println("claude-bunker", Version)
+			os.Exit(0)
+		case "--dump-dockerfile":
+			if err := dumpDockerfile(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		}
+	}
+	return rootCmd.Execute()
+}
+
+// dumpDockerfile writes the base Dockerfile and embedded scripts to a directory.
+// Used by CI to generate the Docker build context for pre-built base images.
+// If an argument is provided after --dump-dockerfile, it's used as the output
+// directory; otherwise a temp directory is created.
+func dumpDockerfile() error {
+	var outDir string
+	if len(os.Args) > 2 {
+		outDir = os.Args[2]
+	} else {
+		var err error
+		outDir, err = os.MkdirTemp("", "claude-bunker-dockerfile-*")
+		if err != nil {
+			return fmt.Errorf("creating temp dir: %w", err)
+		}
+	}
+
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return fmt.Errorf("creating output dir: %w", err)
+	}
+
+	dockerfile := container.GenerateBaseDockerfile()
+	if err := os.WriteFile(filepath.Join(outDir, "Dockerfile"), []byte(dockerfile), 0644); err != nil {
+		return fmt.Errorf("writing Dockerfile: %w", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(outDir, "init-firewall.sh"), container.InitFirewallScript(), 0755); err != nil {
+		return fmt.Errorf("writing init-firewall.sh: %w", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(outDir, "tmux.conf"), container.TmuxConf(), 0644); err != nil {
+		return fmt.Errorf("writing tmux.conf: %w", err)
+	}
+
+	fmt.Println(outDir)
+	return nil
+}

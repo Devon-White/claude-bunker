@@ -2,7 +2,6 @@
 .claude-bunker.json
 
 # Environment files — never commit secrets
-.devcontainer/.env*
 .env
 .env.*
 
@@ -14,6 +13,17 @@
 
 # Node
 node_modules/
+
+# Go build output
+claude-bunker
+claude-bunker.exe
+claude-bunker.exe~
+dist/
+
+# Legacy / scratch
+bash-backup/
+ochestration.md
+test-settings.json
 
 # OS junk
 .DS_Store

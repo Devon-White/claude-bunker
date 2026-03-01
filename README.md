@@ -8,21 +8,20 @@ Running Claude Code with `--dangerously-skip-permissions` is powerful but risky 
 
 claude-bunker solves this by running Claude inside a Docker container with:
 
-- **Network firewall** — default-deny iptables policy. Only Anthropic's API, GitHub, npm, and a handful of essential services are reachable. Everything else is blocked.
-- **Inner sandbox** — Claude Code's bubblewrap sandbox is enabled automatically inside the container, adding a second isolation layer.
-- **No credential passthrough** — API keys and tokens are never injected via environment variables. You authenticate once inside the container, and credentials are stored in an isolated Docker volume.
-- **Bind-mounted workspace** — your project directory is mounted read-write into the container. Claude edits your actual files. You commit and push from your host.
+- **Network firewall** -- default-deny iptables policy. Only Anthropic's API, GitHub, npm, and a handful of essential services are reachable. Everything else is blocked.
+- **Inner sandbox** -- Claude Code's bubblewrap sandbox is enabled automatically and enforced via tamper-proof managed settings.
+- **No credential passthrough** -- API keys and tokens are never injected via environment variables. You authenticate once inside the container, and credentials are stored in an isolated Docker volume.
+- **Bind-mounted workspace** -- your project directory is mounted read-write into the container. Claude edits your actual files. You commit and push from your host.
 
 ## Quick start
 
-**Prerequisites:** Docker and Node.js (for the devcontainer CLI, auto-installed if missing).
+**Prerequisites:** [Docker](https://www.docker.com/get-started/), [Go 1.26+](https://go.dev/dl/).
 
 ```bash
-# Clone claude-bunker somewhere permanent
-git clone https://github.com/your-username/claude-bunker.git ~/claude-bunker
+# Install via go install
+go install github.com/Devon-White/claude-bunker@latest
 
-# Add to your PATH (add this line to .bashrc / .zshrc)
-export PATH="$PATH:$HOME/claude-bunker"
+# Or download a release binary from GitHub Releases and add to your PATH
 
 # Navigate to any project and run Claude
 cd ~/projects/my-app
@@ -32,7 +31,7 @@ claude-bunker
 That's it. The sandbox builds on first run (takes a few minutes, cached after that), starts automatically, and tears down when Claude exits. Configuration changes are detected and trigger a rebuild automatically.
 
 ```bash
-# Skip permission prompts (safe — the container is firewalled)
+# Skip permission prompts (safe -- the container is firewalled)
 claude-bunker --dangerously-skip-permissions
 
 # Run with a direct prompt
@@ -42,16 +41,58 @@ claude-bunker -p "fix the failing tests"
 claude-bunker --model sonnet -p "add tests for auth.ts"
 ```
 
+## Two config systems
+
+claude-bunker has two separate config files. They control different things and don't overlap:
+
+| File | Controls | Read by |
+|------|----------|---------|
+| `.claude/.claude-bunker/config.json` | Container infrastructure: what's mounted, what's reachable, packages, env vars | claude-bunker (before container starts) |
+| `.claude/settings.json` | Claude Code behavior: permissions, hooks, sandbox overrides | Claude Code (inside the container) |
+
+Think of it this way: `config.json` sets up the **room** Claude works in. `settings.json` sets the **rules** Claude follows inside that room.
+
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `claude-bunker [flags]` | Run Claude. All flags pass through to the `claude` CLI. Sandbox starts/stops automatically |
+| `claude-bunker [flags]` | Run Claude. All unknown flags pass through to the `claude` CLI |
 | `claude-bunker shell` | Open a zsh shell in the sandbox (for debugging or manual work) |
-| `claude-bunker prune` | List and remove orphaned Docker volumes from old containers |
+| `claude-bunker status` | Show sandbox state: container info, uptime, active sessions |
+| `claude-bunker prune` | List and remove Docker volumes. Supports `--force` and `--all` |
+| `claude-bunker completion <shell>` | Generate shell completion script (bash, zsh, fish, powershell) |
+| `claude-bunker version` | Print the version |
 | `claude-bunker help` | Show usage information |
 
+### claude-bunker flags
+
+These flags are consumed by claude-bunker and not passed through to the Claude CLI:
+
+| Flag | Description |
+|------|-------------|
+| `--verbose` | Show detailed output during startup |
+| `--quiet` | Suppress informational output |
+| `--gh-token <token>` | GitHub fine-grained PAT for git operations inside the container |
+| `--api-key <key>` | Anthropic API key (injected securely via tmpfs file, not env var) |
+| `--oauth-token <token>` | Claude Code OAuth token for headless/CI auth |
+
+All other flags (e.g. `--dangerously-skip-permissions`, `-p`, `--model`, `--team`) are passed through directly to the `claude` CLI.
+
 ## How it works
+
+### Security layers
+
+claude-bunker uses defense-in-depth with multiple independent security layers:
+
+```
+Layer 4: managed-settings.json     (tamper-proof sandbox enforcement)
+Layer 3: Claude sandbox (bwrap)    (filesystem write restriction, domain-level network filter)
+Layer 2: iptables firewall         (IP-level network allowlist, default-deny)
+Layer 1: Docker container          (process/mount/network namespace isolation)
+Layer 0: Bind-mount workspace      (your files, read-write by design)
+```
+
+If a prompt injection bypasses one layer, the next catches it. For example, if Claude disables the sandbox via `/sandbox` toggle, `managed-settings.json` (Layer 4) overrides it back. If the sandbox domain filter is somehow bypassed, the iptables firewall (Layer 2) still blocks the traffic at the IP level.
 
 ### Architecture
 
@@ -61,20 +102,18 @@ Host machine                         Docker container
 |                           |        |  iptables firewall (DROP all)  |
 |  ~/projects/my-app/  ----bind----> |  /workspace/                   |
 |                           | mount  |                                |
-|  git push, git commit     |        |  Claude Code (as node user)    |
+|  git push, git commit     |        |  Claude Code (as claude-bunker)|
 |  (done on host)           |        |  bubblewrap sandbox            |
 |                           |        |  zsh, tmux, git-delta, jq ...  |
 +---------------------------+        +--------------------------------+
 ```
 
-The container provides **infrastructure isolation** (network, process, filesystem). Your project provides **Claude Code configuration** (permissions, hooks, settings).
-
 ### What happens when you run `claude-bunker`
 
-1. The devcontainer CLI builds the Docker image (cached after first build)
+1. The Docker image is built via the Docker API (cached after first build)
 2. Your project directory is bind-mounted to `/workspace`
-3. `init-firewall.sh` runs — configures iptables rules, resolves allowed IPs, verifies the firewall works
-4. `inject-sandbox-defaults.sh` runs — ensures your project has Claude Code sandbox settings
+3. `init-firewall.sh` runs -- configures iptables rules, resolves allowed IPs, verifies the firewall works
+4. Sandbox defaults are injected into your project's Claude Code settings (always overwrites the `sandbox` key to ensure correctness)
 5. Claude Code launches
 6. When Claude exits, the container is stopped and removed (volumes persist for auth/history)
 
@@ -82,7 +121,7 @@ If the container is already running (from another terminal), Claude connects to 
 
 ### Automatic rebuild detection
 
-claude-bunker fingerprints its configuration files. When you modify the Dockerfile, devcontainer.json, or `.claude-bunker.json`, the next run detects the change and rebuilds automatically. No manual `rebuild` command needed.
+claude-bunker fingerprints its configuration files and subdirectories. When you modify the Dockerfile, devcontainer.json, or `.claude-bunker/config.json`, the next run detects the change and rebuilds automatically. No manual `rebuild` command needed.
 
 ### Network firewall
 
@@ -95,6 +134,7 @@ The firewall uses a default-deny policy with an allowlist. Only these destinatio
 | `sentry.io` | Claude Code error reporting |
 | `github.com` (all GitHub IP ranges) | Git operations, `gh` CLI |
 | `registry.npmjs.org` | npm package installs |
+| `pypi.org`, `files.pythonhosted.org` | Python package installs |
 | `marketplace.visualstudio.com`, `vscode.blob.core.windows.net`, `update.code.visualstudio.com` | VS Code Remote Containers support |
 
 All other outbound traffic is rejected immediately (ICMP admin-prohibited). IPv6 is fully blocked to prevent firewall bypass.
@@ -105,59 +145,93 @@ On startup, the firewall verifies itself:
 
 If either check fails, the container refuses to start.
 
+#### Dual domain allowlists
+
+`allowDomains` in `config.json` configures two separate systems:
+
+- **iptables firewall** -- resolves domains to IPs at startup, blocks at network level. Fast and reliable, but resolved IPs can become stale if a CDN rotates them during a long session.
+- **Claude Code sandbox** -- filters by domain name at request time. Survives IP rotation but only applies when the sandbox is active.
+
+Both exist for defense-in-depth: if one is bypassed, the other still blocks unauthorized traffic.
+
+#### DNS resolution limitation
+
+Domain IPs are resolved once when the container starts. CDN-backed services rotate IPs over time. In long-running containers, resolved IPs may become stale, causing allowed connections to fail. The sandbox layer (Layer 3) performs domain-level filtering that survives IP rotation. If connections to allowed domains start failing, restart the container to re-resolve IPs.
+
+## Authentication
+
+### First-time setup (OAuth)
+
+On first launch, Claude Code prompts you to log in via browser. The OAuth flow redirects to localhost. Credentials are stored in a Docker volume mounted at `~/.claude` inside the container -- they persist across container restarts. You only authenticate once per project.
+
+Each project gets its own Docker volume (keyed to the workspace directory name), so different projects can use different credentials. To reset credentials, use `claude-bunker prune`.
+
+### API key users
+
+Pass your Anthropic API key via the `--api-key` flag. The key is injected into the container via a tmpfs file at `/run/secrets/api_key` -- it never appears as an environment variable or in `docker inspect`.
+
+```bash
+claude-bunker --api-key sk-ant-...
+```
+
+You can also set the `ANTHROPIC_API_KEY` environment variable on the host -- claude-bunker will read it and inject it the same way.
+
+### Headless / CI (OAuth token)
+
+For CI or headless environments where browser auth is not possible, use `claude setup-token` on a machine with a browser to generate a long-lived OAuth token, then pass it to claude-bunker:
+
+```bash
+claude-bunker --oauth-token <token>
+```
+
+Or set the `CLAUDE_CODE_OAUTH_TOKEN` environment variable on the host.
+
+### GitHub access (git push from container)
+
+By default, the container has no git credentials. You push from your host. If you need git push from inside the container (autonomous workflows, CI), provide a [GitHub fine-grained PAT](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens) scoped to the target repo:
+
+```bash
+claude-bunker --gh-token ghp_...
+```
+
+Or set it in your project's `config.json`:
+
+```json
+{ "ghToken": "ghp_..." }
+```
+
+The token is injected via tmpfs at `/run/secrets/gh_token` and configured as a git credential helper. The firewall limits blast radius -- the token is only usable against GitHub's IP ranges.
+
 ## Claude Code settings
 
-claude-bunker deliberately does not bake Claude Code settings into the container image. Settings are a project-level concern — different projects have different needs.
+claude-bunker deliberately does not bake Claude Code settings into the container image. Settings are a project-level concern -- different projects have different needs.
 
-### Settings hierarchy
+### Settings precedence
 
-Claude Code reads settings from multiple files, in order of precedence (highest first):
+Claude Code reads settings from multiple sources, in order of precedence (highest first):
 
-1. **`.claude/settings.local.json`** — personal overrides, never committed
-2. **`.claude/settings.json`** — shared project settings, meant to be committed
-3. **`~/.claude/settings.json`** — user-level defaults (inside the container, this is a Docker volume)
+1. **`/etc/claude-code/managed-settings.json`** -- tamper-proof, baked into the Docker image. Cannot be overridden by any user action. Enforces `sandbox.enabled`, `allowUnsandboxedCommands: false`, and `enableWeakerNestedSandbox`.
+2. **Command line arguments** -- flags passed directly to `claude`
+3. **`.claude/settings.local.json`** -- personal overrides, never committed
+4. **`.claude/settings.json`** -- shared project settings, meant to be committed
+5. **`~/.claude/settings.json`** -- user-level defaults (inside the container, this is a Docker volume)
 
-Same key in a higher-precedence file completely overrides the lower one.
+Same key in a higher-precedence source completely overrides the lower one. Because `managed-settings.json` is highest, sandbox enforcement cannot be disabled -- not even via the `/sandbox` toggle inside Claude.
 
 ### Automatic sandbox injection
 
-On every container start, `inject-sandbox-defaults.sh` checks your project's `.claude/settings.json`:
+On every container start, claude-bunker injects sandbox defaults into both `.claude/settings.json` and `.claude/settings.local.json` inside the container (on the tmpfs overlay -- your host files are not modified):
 
-- **File doesn't exist** — creates it with sandbox defaults
-- **File exists but has no `sandbox` key** — merges sandbox defaults into the existing file, preserving all other settings
-- **File already has `sandbox` settings** — does nothing
+- **File doesn't exist** -- creates it with sandbox defaults
+- **File exists** -- merges sandbox defaults, always overwriting the `sandbox` key to ensure correctness
 
-The injected defaults:
-
-```json
-{
-  "sandbox": {
-    "enabled": true,
-    "enableWeakerNestedSandbox": true,
-    "network": {
-      "allowedDomains": [
-        "api.anthropic.com",
-        "statsig.anthropic.com",
-        "statsig.com",
-        "sentry.io",
-        "github.com",
-        "*.github.com",
-        "registry.npmjs.org"
-      ]
-    }
-  }
-}
-```
-
-This enables Claude Code's inner bubblewrap sandbox as a second defense layer on top of the iptables firewall. The `enableWeakerNestedSandbox` flag is necessary because Docker containers don't have `CAP_SYS_ADMIN`, which full bubblewrap requires.
-
-The script only touches `.claude/settings.json` (the shared, committable file). It never modifies `.claude/settings.local.json`. You can always override the injected sandbox settings via your local file.
+The injected defaults include the bubblewrap sandbox configuration with `enableWeakerNestedSandbox` (required because Docker containers lack `CAP_SYS_ADMIN`) and the domain allowlist matching the firewall.
 
 ### Configuring your project
 
 Add any Claude Code settings to your project's `.claude/settings.json`. Common examples:
 
-**Permission deny list** — block dangerous commands:
+**Permission deny list** -- block dangerous commands:
 ```json
 {
   "permissions": {
@@ -175,7 +249,7 @@ Add any Claude Code settings to your project's `.claude/settings.json`. Common e
 }
 ```
 
-**Permission allow list** — pre-approve safe commands:
+**Permission allow list** -- pre-approve safe commands:
 ```json
 {
   "permissions": {
@@ -189,35 +263,6 @@ Add any Claude Code settings to your project's `.claude/settings.json`. Common e
 }
 ```
 
-**PreToolUse hooks** — run custom scripts before Claude executes tools:
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/your/guard-script.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-**Agent teams:**
-```json
-{
-  "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
-  },
-  "teammateMode": "auto"
-}
-```
-
 See the [Claude Code settings documentation](https://docs.anthropic.com/en/docs/claude-code/settings) for all available options.
 
 ### Personal overrides
@@ -226,21 +271,114 @@ Create `.claude/settings.local.json` (gitignored) for machine-specific settings 
 
 ```json
 {
-  "sandbox": {
-    "enabled": false
+  "permissions": {
+    "allow": [
+      "Bash(cargo test *)"
+    ]
   }
 }
 ```
 
-This takes precedence over `.claude/settings.json` for your machine only.
+This takes precedence over `.claude/settings.json` for your machine only. Note that sandbox settings in `settings.local.json` are overwritten by claude-bunker on each start to prevent Claude Code from auto-disabling the sandbox.
 
-## Authentication
+## Project config
 
-Credentials are stored in a Docker volume mounted at `~/.claude` inside the container. No API keys or tokens are passed through environment variables.
+Place a `.claude/.claude-bunker/config.json` in your project to customize container behavior. All fields are optional.
 
-On first launch, Claude will prompt you to log in. Credentials persist across sessions — you only authenticate once per project.
+```json
+{
+  "workspace": "./packages/backend",
+  "exclude": ["secrets/", ".env.production"],
+  "allowDomains": ["private-registry.company.com"],
+  "apt": ["python3", "python3-pip"],
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {"version": "20"}
+  },
+  "env": {"PYTHONDONTWRITEBYTECODE": "1"},
+  "postCreateCommand": "pip install -r requirements.txt",
+  "ghToken": "ghp_...",
+  "seedHistory": true
+}
+```
 
-Each project gets its own Docker volume (keyed to the workspace directory name), so different projects can use different credentials. To reset credentials, use `claude-bunker prune` to remove Docker volumes.
+### Fields
+
+#### workspace
+
+Sets the working directory inside the container. The full project is still mounted at `/workspace` (preserving git context), but Claude and your shell start in the specified subdirectory.
+
+```json
+{ "workspace": "./packages/backend" }
+```
+
+Useful for monorepos where you want Claude focused on one package. Claude can still navigate to other directories if needed -- this is a convenience default, not a security boundary.
+
+#### exclude
+
+Hides paths inside the container using tmpfs overlays. The files are genuinely invisible -- not just permission-blocked, but replaced with empty filesystems.
+
+```json
+{ "exclude": ["secrets/", ".env.production", "credentials/"] }
+```
+
+Paths are relative to the project root. This is a strong isolation mechanism: even with `--dangerously-skip-permissions`, Claude cannot see excluded files because they don't exist in the container's filesystem.
+
+#### allowDomains
+
+Adds domains to both the iptables firewall allowlist and the Claude Code sandbox network settings. These are resolved at container startup and added alongside the built-in domains.
+
+```json
+{ "allowDomains": ["private-registry.company.com", "pypi.org"] }
+```
+
+Domains must have at least 2 segments (e.g. `example.com`). Overly broad patterns like `*.com` are rejected. If a domain fails to resolve, the container still starts (warning is logged, domain is skipped).
+
+#### apt
+
+Additional apt packages to install in the container. Avoids the need to fork the repo and edit the Dockerfile for common tools.
+
+```json
+{ "apt": ["python3", "python3-pip", "ripgrep"] }
+```
+
+#### features
+
+OCI [devcontainer features](https://containers.dev/features) to install. These are community-maintained feature packages that add languages, tools, and runtimes.
+
+```json
+{
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {"version": "20"},
+    "ghcr.io/devcontainers/features/rust:1": {}
+  }
+}
+```
+
+#### env
+
+Environment variables injected into the container at creation time.
+
+```json
+{ "env": {"PYTHONDONTWRITEBYTECODE": "1", "NODE_ENV": "development"} }
+```
+
+#### postCreateCommand
+
+A shell command that runs after the container is created (after the firewall is configured). Runs as the `claude-bunker` user inside `/workspace`.
+
+```json
+{ "postCreateCommand": "pip install -r requirements.txt && npm install" }
+```
+
+**Trust boundary:** This command comes from the project's `config.json`, which lives inside the cloned repository. A malicious `config.json` can execute arbitrary shell commands here -- this is inherent to the devcontainer model (VS Code has the same trust issue). Review `config.json` before running claude-bunker on untrusted repos. The firewall limits blast radius by restricting network access.
+
+#### ghToken
+
+GitHub fine-grained PAT for git operations inside the container. Same as the `--gh-token` CLI flag. The CLI flag takes priority if both are set.
+
+#### seedHistory
+
+Whether to seed session history from the host into the container. Defaults to `true`. Set to `false` if your host sessions contain sensitive information you don't want inside the container.
 
 ## Multiple projects
 
@@ -260,7 +398,7 @@ Each container has its own firewall, credentials, and bash history.
 
 ## Agent teams
 
-The container includes tmux with a pre-configured setup for Claude Code's agent teams feature. Tmux prefix is `Ctrl-a`.
+The container includes tmux with a pre-configured setup for Claude Code's agent teams feature. The `--team` flag passes through to the Claude CLI. Tmux prefix is `Ctrl-a`.
 
 ```bash
 claude-bunker --team
@@ -277,81 +415,30 @@ Useful tmux bindings:
 | `Ctrl-a S` | Toggle synchronized input to all panes |
 | `Ctrl-a M-5` | Tiled layout (all panes equal) |
 
-## Project config (.claude-bunker.json)
-
-Place a `.claude-bunker.json` in your project root to customize container behavior per-project. This file controls the **container** — what gets mounted, what's reachable, where Claude starts. For **Claude Code** settings (permissions, hooks, sandbox overrides), use `.claude/settings.json` instead.
-
-```json
-{
-  "workspace": "./packages/backend",
-  "exclude": ["secrets/", ".env.production"],
-  "allowDomains": ["private-registry.company.com", "artifactory.internal.io"]
-}
-```
-
-All fields are optional.
-
-### workspace
-
-Sets the working directory inside the container. The full project is still mounted at `/workspace` (preserving git context), but Claude and your shell start in the specified subdirectory.
-
-```json
-{ "workspace": "./packages/backend" }
-```
-
-Useful for monorepos where you want Claude focused on one package. Claude can still navigate to other directories if needed — this is a convenience default, not a security boundary.
-
-### exclude
-
-Hides paths inside the container using tmpfs overlays. The files are genuinely invisible — not just permission-blocked, but replaced with empty filesystems.
-
-```json
-{ "exclude": ["secrets/", ".env.production", "credentials/"] }
-```
-
-Paths are relative to the project root. This is a strong isolation mechanism: even with `--dangerously-skip-permissions`, Claude cannot see excluded files because they don't exist in the container's filesystem.
-
-### allowDomains
-
-Adds domains to both the iptables firewall allowlist and the Claude Code sandbox network settings. These are resolved at container startup and added alongside the built-in domains.
-
-```json
-{ "allowDomains": ["private-registry.company.com", "pypi.org"] }
-```
-
-If a domain fails to resolve, the container still starts (warning is logged, domain is skipped). This is intentionally non-fatal since extra domains are user-provided.
-
-### How the config layers work
-
-There are three layers of configuration, each handling a different concern:
-
-| File | Scope | Controls |
-|------|-------|----------|
-| `.claude-bunker.json` | Container | What's mounted, what's reachable, working directory |
-| `.claude/settings.json` | Claude Code (shared) | Permissions, hooks, sandbox config |
-| `.claude/settings.local.json` | Claude Code (personal) | Per-developer overrides |
-
-These don't overlap. `.claude-bunker.json` is read by the launcher before the container starts. Claude Code settings are read by Claude Code inside the container.
-
 ## Extending
 
 ### Adding tools to the container
 
-Fork the repo and edit `.devcontainer/Dockerfile` to add packages:
+The simplest approach is to use the `apt` field in your project's `config.json`:
+
+```json
+{ "apt": ["python3", "python3-pip"] }
+```
+
+For more complex setups, fork the repo and edit `.devcontainer/Dockerfile`:
 
 ```dockerfile
-# Example: add Python and pip
+# Example: add custom tooling
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  python3 \
-  python3-pip \
+  your-package \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 ```
 
-The next `claude-bunker` run will detect the Dockerfile change and rebuild automatically.
+The next `claude-bunker` run will detect the change and rebuild automatically.
 
 ### Adding allowed domains
 
-**Per-project (recommended):** Add `allowDomains` to your project's `.claude-bunker.json`:
+**Per-project (recommended):** Add `allowDomains` to your project's `config.json`:
 
 ```json
 { "allowDomains": ["private-registry.company.com"] }
@@ -359,7 +446,7 @@ The next `claude-bunker` run will detect the Dockerfile change and rebuild autom
 
 This adds domains to both the firewall and sandbox settings automatically. No forking required.
 
-**Globally (all projects):** Edit `.devcontainer/init-firewall.sh` and add domains to the resolution loop. You should also update `.devcontainer/inject-sandbox-defaults.sh` to match.
+**Globally (all projects):** Edit `.devcontainer/init-firewall.sh` and add domains to the resolution loop.
 
 ### Pinning the Claude Code version
 
@@ -383,10 +470,12 @@ The `.devcontainer/devcontainer.json` is a standard devcontainer config. You can
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CLAUDE_BUNKER_DIR` | Script directory | Path to the claude-bunker repo |
-| `CLAUDE_BUNKER_WS` | `$PWD` | Workspace directory to mount |
+| `CLAUDE_BUNKER_WS` | `$PWD` | Workspace directory to mount (override current directory) |
+| `CLAUDE_BUNKER_QUIET` | unset | Set to `1` to suppress informational output (same as `--quiet`) |
+| `ANTHROPIC_API_KEY` | unset | Anthropic API key (read by claude-bunker if `--api-key` not provided) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | unset | Claude Code OAuth token (read if `--oauth-token` not provided) |
 | `TZ` | `America/Los_Angeles` | Container timezone |
-| `CLAUDE_CODE_VERSION` | `latest` | Claude Code version to install (build arg) |
+| `CLAUDE_CODE_VERSION` | `latest` | Claude Code version to install (Dockerfile build arg) |
 
 ## Platform support
 
@@ -401,61 +490,66 @@ The `.devcontainer/devcontainer.json` is a standard devcontainer config. You can
 
 ### What the container provides
 
-- **Network isolation** — iptables default-deny with IPv4 allowlist and full IPv6 block
-- **Process isolation** — Docker container boundary, non-root `node` user
-- **Inner sandbox** — bubblewrap (weak mode) enabled via injected settings
-- **No credential passthrough** — auth tokens stored in isolated Docker volume, never in environment variables
-- **Firewall self-test** — container refuses to start if the firewall doesn't work
+- **Network isolation** -- iptables default-deny with IPv4 allowlist and full IPv6 block
+- **Process isolation** -- Docker container boundary, non-root `claude-bunker` user
+- **Inner sandbox** -- bubblewrap (weak mode) enforced via `managed-settings.json` (cannot be toggled off)
+- **No credential passthrough** -- auth tokens stored in isolated Docker volume or injected via tmpfs files, never in environment variables
+- **Firewall self-test** -- container refuses to start if the firewall doesn't work
 
 ### What the container does NOT provide
 
-- **File isolation** — your project is bind-mounted read-write. Claude can modify any file in the project. This is by design — Claude needs to edit your code.
-- **Git push protection** — Claude can `git commit` inside the container (it has git). Pushing requires credentials, which depend on your setup. For maximum safety, push from your host.
-- **Infallible command filtering** — the firewall is the real security boundary. There is no regex-based command filter because those are inherently bypassable. Use Claude Code's [permission deny lists](https://docs.anthropic.com/en/docs/claude-code/settings) in your project settings instead.
+- **File isolation** -- your project is bind-mounted read-write. Claude can modify any file in the project. This is by design -- Claude needs to edit your code.
+- **Git push protection** -- Claude can `git commit` inside the container (it has git). Pushing requires credentials, which depend on your setup. For maximum safety, push from your host.
+- **Infallible command filtering** -- the firewall is the real security boundary. There is no regex-based command filter because those are inherently bypassable. Use Claude Code's [permission deny lists](https://docs.anthropic.com/en/docs/claude-code/settings) in your project settings instead.
 
 ### Known trade-offs
 
-- **GitHub access is broad** — the firewall allows all GitHub IP ranges (web + api + git). A prompt injection could theoretically exfiltrate data to a public GitHub repo. This is necessary for git operations to work. If your workflow keeps git operations on the host, you could remove GitHub IPs from the firewall.
-- **DNS resolution at startup** — domain IPs are resolved once when the container starts. If an IP changes while the container is running, the new IP won't be reachable until restart.
+- **GitHub access is broad** -- the firewall allows all GitHub IP ranges (web + api + git). A prompt injection could theoretically exfiltrate data to a public GitHub repo. This is necessary for git operations to work. If your workflow keeps git operations on the host, you could remove GitHub IPs from the firewall.
+- **DNS resolution at startup** -- domain IPs are resolved once when the container starts. If an IP changes while the container is running, the new IP won't be reachable until restart. The sandbox layer provides domain-level filtering as a backup.
+- **AppArmor not enforced** -- Docker Desktop on macOS/Windows doesn't support AppArmor profiles. On Linux with AppArmor available, consider adding a custom profile for additional process-level restrictions.
 
 ## Troubleshooting
 
 **Container fails to start with DNS errors**
 The firewall script resolves domain names at startup. If your network is slow or a DNS server is temporarily unreachable, startup will fail. Run `claude-bunker` again to retry.
 
-**"Permission denied" running claude-bunker.sh**
-```bash
-chmod +x /path/to/claude-bunker/claude-bunker.sh
-```
-
 **Claude can't reach the API**
-The firewall might have stale IPs. Exit Claude and run `claude-bunker` again — the container is recreated fresh each time.
+The firewall might have stale IPs. Exit Claude and run `claude-bunker` again -- the container is recreated fresh each time.
 
 **Credentials lost**
 Credentials are stored in Docker volumes. They persist across sessions. If you ran `claude-bunker prune`, volumes were deleted and you need to log in again.
 
 **Windows path errors**
-If you see paths like `c:\c\Users\...` in error messages, ensure you're running from Git Bash without manually setting `MSYS_NO_PATHCONV`. The script handles path conversion automatically.
+If you see paths like `c:\c\Users\...` in error messages, ensure you're running from Git Bash without manually setting `MSYS_NO_PATHCONV`. The tool handles path conversion automatically.
+
+**Docker not running**
+claude-bunker requires Docker to be running. On first use, it checks for the Docker daemon and provides a clear error message if Docker is not available.
 
 ## Project structure
 
 ```
 claude-bunker/
-  claude-bunker.sh                    # CLI launcher — the main entry point
+  main.go                             # Entry point
+  cmd/                                # CLI commands (root, shell, prune, status, completion, version)
+  internal/
+    config/                           # Configuration loading, fingerprinting, naming
+    container/                        # Docker API (build, create, exec, copy)
+    sandbox/                          # Sandbox settings seeding
+    platform/                         # Platform-specific helpers (TTY, paths)
   .devcontainer/
-    devcontainer.json                 # Container config (mounts, env, startup)
-    Dockerfile                        # Image definition (tools, Claude Code)
+    devcontainer.json                 # Container config (also usable with VS Code)
+    Dockerfile                        # Image definition (tools, Claude Code, managed-settings.json)
     init-firewall.sh                  # iptables firewall setup + verification
-    inject-sandbox-defaults.sh        # Sandbox settings injection
     .tmux.conf                        # tmux configuration for agent teams
+  .goreleaser.yml                     # Release automation
   .gitattributes                      # LF line endings for shell scripts
-  .gitignore                          # Ignores .env, .claude/, node_modules/
-  package.json                        # npm metadata for distribution
+  .gitignore                          # Ignores .env, .claude/, etc.
 
 # In your project (created automatically or by you):
 your-project/
-  .claude-bunker.json                 # Optional — container overrides
   .claude/
+    .claude-bunker/
+      config.json                     # Optional -- container overrides
     settings.json                     # Claude Code project settings (sandbox injected here)
     settings.local.json               # Personal overrides (gitignored)
 ```

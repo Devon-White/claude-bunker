@@ -1,0 +1,442 @@
+package cmd
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	dockerclient "github.com/docker/docker/client"
+
+	"github.com/Devon-White/claude-bunker/internal/config"
+	"github.com/Devon-White/claude-bunker/internal/container"
+	"github.com/Devon-White/claude-bunker/internal/platform"
+	"github.com/Devon-White/claude-bunker/internal/sandbox"
+)
+
+// verbosity controls output level: -1 = quiet, 0 = normal, 1 = verbose.
+var verbosity int
+
+func info(msg string) {
+	if verbosity >= 0 {
+		fmt.Println("[claude-bunker]", msg)
+	}
+}
+func verbose(msg string) {
+	if verbosity >= 1 {
+		fmt.Println("[claude-bunker]", msg)
+	}
+}
+func warn(msg string) {
+	if verbosity >= 0 {
+		fmt.Fprintln(os.Stderr, "[claude-bunker] WARNING:", msg)
+	}
+}
+func die(msg string) {
+	fmt.Fprintln(os.Stderr, "[claude-bunker] ERROR:", msg)
+	if activeRunner != nil {
+		activeRunner.cleanup()
+	}
+	os.Exit(1)
+}
+
+// activeRunner is set during runInSandbox so signal handlers and die() can
+// access the runner for cleanup.
+var activeRunner *runner
+
+// runner holds all state for a single sandbox session, replacing the old
+// package-level cleanupState global.
+type runner struct {
+	mu        sync.Mutex
+	cleanedUp bool
+	teardown  bool
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	cli    *dockerclient.Client
+
+	workspace     string
+	projectCfg    config.ProjectConfig
+	containerName string
+	containerID   string
+	imageTag      string
+	extraDomains  string
+	ghToken       string
+	apiKey        string
+	oauthToken    string
+
+	// Computed during resolveContainer, reused in buildAndCreate for fingerprint saving.
+	dockerfile      string
+	scripts         map[string][]byte
+	fpResult        config.FingerprintResult
+	baseImageDigest string // set when pre-built image is pulled from GHCR
+}
+
+// cleanup stops and removes the container. Safe to call multiple times
+// and from any goroutine (signal handlers, normal exit, die()).
+func (r *runner) cleanup() {
+	platform.RestoreSaved()
+
+	r.mu.Lock()
+	if r.cleanedUp || !r.teardown || r.containerID == "" {
+		r.mu.Unlock()
+		return
+	}
+	r.cleanedUp = true
+	cID := r.containerID
+	cName := r.containerName
+	cli := r.cli
+	r.mu.Unlock()
+
+	if cli == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Poll briefly for Docker to update its process list after the exec
+	// session exits.
+	for i := 0; i < 5; i++ {
+		if !container.HasActiveSessions(ctx, cli, cID) {
+			break
+		}
+		if i == 4 {
+			// Other sessions still active — leave the container running
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	info("Stopping sandbox...")
+	_ = container.StopAndRemove(ctx, cli, cName)
+}
+
+// resolveWorkspace determines the workspace directory from env or cwd.
+// Used by runInSandbox, status, and logs commands.
+func resolveWorkspace() string {
+	if ws := os.Getenv("CLAUDE_BUNKER_WS"); ws != "" {
+		return ws
+	}
+	ws, err := os.Getwd()
+	if err != nil {
+		die("cannot determine workspace: " + err.Error())
+	}
+	return ws
+}
+
+// bunkerFlags holds claude-bunker-specific flags extracted from the args
+// before the remaining args are passed through to claude/zsh.
+type bunkerFlags struct {
+	ghToken    string
+	apiKey     string
+	oauthToken string
+	quiet      bool
+	isVerbose  bool
+	keep       bool
+	remaining  []string
+}
+
+// extractBunkerFlags pulls claude-bunker-specific flags from the arg list.
+// Flags: --gh-token, --api-key, --oauth-token (each takes a value).
+// Boolean flags: --verbose, --quiet, --keep, --no-teardown.
+// Returns the extracted values and the remaining args to pass through.
+func extractBunkerFlags(args []string) bunkerFlags {
+	var f bunkerFlags
+	flagMap := map[string]*string{
+		"--gh-token":    &f.ghToken,
+		"--api-key":     &f.apiKey,
+		"--oauth-token": &f.oauthToken,
+	}
+	boolFlags := map[string]*bool{
+		"--verbose":     &f.isVerbose,
+		"--quiet":       &f.quiet,
+		"--keep":        &f.keep,
+		"--no-teardown": &f.keep,
+	}
+
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+
+		// Check boolean flags
+		if dest, ok := boolFlags[arg]; ok {
+			*dest = true
+			i++
+			continue
+		}
+
+		// Check for --flag value and --flag=value forms
+		handled := false
+		for flag, dest := range flagMap {
+			if arg == flag {
+				if i+1 < len(args) {
+					*dest = args[i+1]
+					i += 2
+				} else {
+					// Flag at end of args with no value — consume it
+					i++
+				}
+				handled = true
+				break
+			}
+			if strings.HasPrefix(arg, flag+"=") {
+				*dest = arg[len(flag)+1:]
+				i++
+				handled = true
+				break
+			}
+		}
+		if !handled {
+			f.remaining = append(f.remaining, arg)
+			i++
+		}
+	}
+	return f
+}
+
+// runDefault is the main orchestration flow for launching claude in the sandbox.
+func runDefault(cmd *cobra.Command, args []string) error {
+	return runInSandbox(args, "claude")
+}
+
+// runInSandbox contains the shared orchestration logic for both
+// `claude-bunker` and `claude-bunker shell`.
+func runInSandbox(passedArgs []string, execCmd string) error {
+	flags := extractBunkerFlags(passedArgs)
+
+	// Set verbosity: --quiet or CLAUDE_BUNKER_QUIET=1 suppresses info output,
+	// --verbose enables detailed output.
+	if flags.quiet || os.Getenv("CLAUDE_BUNKER_QUIET") == "1" {
+		verbosity = -1
+	} else if flags.isVerbose {
+		verbosity = 1
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cli, err := container.NewClient()
+	if err != nil {
+		die(err.Error())
+	}
+	defer cli.Close()
+
+	r := &runner{
+		ctx:       ctx,
+		cancel:    cancel,
+		cli:       cli,
+		workspace: resolveWorkspace(),
+	}
+	activeRunner = r
+
+	r.loadConfig(flags)
+	r.resolveNaming()
+	r.resolveContainer()
+
+	if r.containerID == "" {
+		r.buildAndCreate()
+	}
+
+	r.registerCleanup(!flags.keep)
+	if flags.keep {
+		verbose("Container will be kept running after exit (--keep)")
+	}
+
+	r.seedSettings()
+	r.setupSignals()
+
+	exitCode := r.exec(execCmd, flags.remaining)
+	r.cleanup()
+	os.Exit(exitCode)
+	return nil
+}
+
+// loadConfig reads project config and resolves auth token precedence.
+func (r *runner) loadConfig(flags bunkerFlags) {
+	cfg, err := config.LoadProjectConfig(r.workspace)
+	if err != nil {
+		warn("Failed to parse config: " + err.Error())
+	}
+	r.projectCfg = cfg
+
+	// Resolve auth tokens: CLI flags > config > env vars
+	r.ghToken = flags.ghToken
+	if r.ghToken == "" {
+		r.ghToken = r.projectCfg.GhToken
+	}
+	r.apiKey = flags.apiKey
+	if r.apiKey == "" {
+		r.apiKey = os.Getenv("ANTHROPIC_API_KEY")
+	}
+	r.oauthToken = flags.oauthToken
+	if r.oauthToken == "" {
+		r.oauthToken = os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
+	}
+}
+
+// resolveNaming derives container name, image tag, and extra domains.
+func (r *runner) resolveNaming() {
+	r.containerName = config.ContainerName(r.workspace)
+	r.imageTag = config.ImageTag(r.containerName)
+	r.extraDomains = config.ExtraDomains(r.projectCfg)
+}
+
+// resolveContainer checks fingerprints and existing container state to decide
+// whether to reuse, recreate, or rebuild.
+func (r *runner) resolveContainer() {
+	r.dockerfile = container.GenerateBaseDockerfile()
+	r.scripts = map[string][]byte{
+		"init-firewall.sh": container.InitFirewallScript(),
+		"tmux.conf":        container.TmuxConf(),
+	}
+
+	// Load cached base image digest (if any) so fingerprint comparison works
+	// correctly when the previous build used a pre-built GHCR image.
+	r.baseImageDigest = config.LoadBaseImageDigest(r.containerName)
+
+	r.fpResult = config.CompareFingerprints(r.dockerfile, r.scripts, r.projectCfg, r.containerName, r.baseImageDigest)
+
+	if id, running := container.ContainerRunning(r.ctx, r.cli, r.containerName); running {
+		if r.fpResult.ImageMatch && r.fpResult.ContainerMatch {
+			r.containerID = id
+			return
+		}
+		if r.fpResult.ImageMatch {
+			info("Container configuration changed — recreating sandbox...")
+		} else {
+			info("Image configuration changed — rebuilding sandbox...")
+		}
+		_ = container.Stop(r.ctx, r.cli, id)
+		_ = container.Remove(r.ctx, r.cli, id)
+	} else {
+		if id, err := container.FindByLabel(r.ctx, r.cli, r.containerName); err == nil && id != "" {
+			_ = container.Remove(r.ctx, r.cli, id)
+		}
+	}
+}
+
+// buildAndCreate builds the image (if needed), creates and starts the container,
+// runs post-start commands, and saves the fingerprint.
+func (r *runner) buildAndCreate() {
+	needImageBuild := !r.fpResult.ImageMatch || !container.ImageExists(r.ctx, r.cli, r.imageTag)
+
+	if needImageBuild {
+		info("Building sandbox...")
+		result, err := container.BuildImage(r.ctx, r.cli, r.imageTag, needImageBuild, r.projectCfg, Version)
+		if err != nil {
+			die("Failed to build sandbox: " + err.Error())
+		}
+		r.baseImageDigest = result.BaseImageDigest
+	} else {
+		info("Starting sandbox...")
+	}
+
+	id, err := container.CreateAndStart(r.ctx, r.cli, container.CreateAndStartOpts{
+		ContainerName: r.containerName,
+		ImageTag:      r.imageTag,
+		Workspace:     r.workspace,
+		ProjectCfg:    r.projectCfg,
+		ExtraDomains:  r.extraDomains,
+		GhToken:       r.ghToken,
+		ApiKey:        r.apiKey,
+		OAuthToken:    r.oauthToken,
+	})
+	if err != nil {
+		die("Failed to start sandbox: " + err.Error())
+	}
+	r.containerID = id
+
+	if err := container.RunPostStart(r.ctx, r.cli, r.containerID, container.RunPostStartOpts{
+		ExtraDomains:      r.extraDomains,
+		PostCreateCommand: r.projectCfg.PostCreateCommand,
+		GhToken:           r.ghToken,
+		ApiKey:            r.apiKey,
+		OAuthToken:        r.oauthToken,
+	}); err != nil {
+		die("Post-start failed: " + err.Error())
+	}
+
+	if err := config.SaveCombinedFingerprint(r.dockerfile, r.scripts, r.projectCfg, r.containerName, r.baseImageDigest); err != nil {
+		warn("Failed to save fingerprint: " + err.Error())
+	}
+	if err := config.SaveBaseImageDigest(r.containerName, r.baseImageDigest); err != nil {
+		warn("Failed to save base image digest: " + err.Error())
+	}
+}
+
+// registerCleanup marks whether the container should be torn down on exit.
+func (r *runner) registerCleanup(teardown bool) {
+	r.mu.Lock()
+	r.teardown = teardown
+	r.mu.Unlock()
+}
+
+// seedSettings copies settings and session history into the container.
+func (r *runner) seedSettings() {
+	var log io.Writer = os.Stderr
+	if verbosity < 0 {
+		log = io.Discard
+	}
+
+	if err := sandbox.SeedSettings(r.ctx, r.cli, r.containerID, r.workspace, r.extraDomains, log); err != nil {
+		warn("Failed to seed settings: " + err.Error())
+	}
+	if r.projectCfg.ShouldSeedHistory() {
+		if err := sandbox.SeedSessionHistory(r.ctx, r.cli, r.containerID, r.workspace); err != nil {
+			warn("Failed to seed session history: " + err.Error())
+		}
+	}
+}
+
+// setupSignals configures signal handling for the sandbox session.
+func (r *runner) setupSignals() {
+	// SIGINT: ignore (Ctrl+C goes to the container process via raw TTY)
+	signal.Ignore(syscall.SIGINT)
+
+	// SIGTERM, SIGHUP: clean up container then exit
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		<-sigCh
+		r.cancel()
+		r.cleanup()
+		os.Exit(1)
+	}()
+}
+
+// exec runs the command interactively in the container and returns the exit code.
+func (r *runner) exec(execCmd string, passedArgs []string) int {
+	var execCommand []string
+	if execCmd == "claude" && (r.apiKey != "" || r.oauthToken != "") {
+		wrapperPath := container.ContainerHome + "/.claude-auth-wrapper.sh"
+		execCommand = append([]string{wrapperPath, execCmd}, passedArgs...)
+	} else {
+		execCommand = append([]string{execCmd}, passedArgs...)
+	}
+
+	if execCmd == "claude" {
+		info("Launching Claude...")
+	} else {
+		info("Opening shell...")
+	}
+
+	exitCode, err := container.ExecInteractive(r.ctx, r.cli, r.containerID, container.ContainerUser, execCommand)
+	if err != nil {
+		warn("Exec failed: " + err.Error())
+		exitCode = 1
+	}
+
+	if exitCode != 0 && exitCode != 130 {
+		warn(fmt.Sprintf("%s exited with code %d", execCmd, exitCode))
+	}
+
+	return exitCode
+}
