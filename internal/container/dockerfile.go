@@ -17,11 +17,6 @@ func BaseImageRef(version string) string {
 	return BaseImageRegistry + ":v" + version
 }
 
-// ManagedSettingsDir is the directory where Claude Code reads managed settings.
-// The actual managed-settings.json is written at container start (not build time)
-// so it can include the dynamic domain allowlist from project config.
-const ManagedSettingsDir = "/etc/claude-code"
-
 // GenerateBaseDockerfile produces the complete base Dockerfile as a string,
 // ending with USER claude-bunker. Used for fingerprinting and standalone builds.
 func GenerateBaseDockerfile() string {
@@ -32,15 +27,20 @@ func GenerateBaseDockerfile() string {
 // line. Used by GenerateBaseDockerfile (which appends USER) and by buildLocal
 // when merging with dynamic layers (GenerateDockerfile appends USER).
 func generateBaseContent() string {
+	u := ContainerUser
+	h := ContainerHome
+	ws := ContainerWorkspace
+	hist := CommandHistoryDir
+
 	var b strings.Builder
 
 	// --- Base image ---
 	b.WriteString("FROM debian:bookworm-slim\n\n")
 
 	// --- Create non-root user ---
-	b.WriteString("# Create claude-bunker user\n")
-	b.WriteString("RUN groupadd --gid 1000 claude-bunker && \\\n")
-	b.WriteString("  useradd --uid 1000 --gid 1000 -m -s /bin/bash claude-bunker\n\n")
+	fmt.Fprintf(&b, "# Create %s user\n", u)
+	fmt.Fprintf(&b, "RUN groupadd --gid 1000 %s && \\\n", u)
+	fmt.Fprintf(&b, "  useradd --uid 1000 --gid 1000 -m -s /bin/bash %s\n\n", u)
 
 	// --- Main apt-get install ---
 	b.WriteString("# Install development tools, iptables for firewall, and utilities\n")
@@ -64,22 +64,22 @@ func generateBaseContent() string {
 	b.WriteString("ENV TZ=\"$TZ\"\n\n")
 
 	// --- Bash history + workspace (merged into 1 RUN) ---
-	b.WriteString("ARG USERNAME=claude-bunker\n")
+	fmt.Fprintf(&b, "ARG USERNAME=%s\n", u)
 	b.WriteString("# Persist bash history, create dirs\n")
-	b.WriteString("RUN SNIPPET=\"export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history\" \\\n")
-	b.WriteString("  && mkdir /commandhistory \\\n")
-	b.WriteString("  && touch /commandhistory/.bash_history \\\n")
-	b.WriteString("  && chown -R $USERNAME /commandhistory \\\n")
-	b.WriteString("  && echo \"$SNIPPET\" >> \"/home/$USERNAME/.bashrc\" \\\n")
-	b.WriteString("  && mkdir -p /workspace /home/claude-bunker/.claude \\\n")
-	b.WriteString("  && chown -R claude-bunker:claude-bunker /workspace /home/claude-bunker/.claude \\\n")
-	b.WriteString("  && mkdir -p /etc/claude-code\n\n")
+	fmt.Fprintf(&b, "RUN SNIPPET=\"export PROMPT_COMMAND='history -a' && export HISTFILE=%s/.bash_history\" \\\n", hist)
+	fmt.Fprintf(&b, "  && mkdir %s \\\n", hist)
+	fmt.Fprintf(&b, "  && touch %s/.bash_history \\\n", hist)
+	fmt.Fprintf(&b, "  && chown -R $USERNAME %s \\\n", hist)
+	fmt.Fprintf(&b, "  && echo \"$SNIPPET\" >> \"%s/.bashrc\" \\\n", h)
+	fmt.Fprintf(&b, "  && mkdir -p %s %s/.claude \\\n", ws, h)
+	fmt.Fprintf(&b, "  && chown -R %s:%s %s %s/.claude \\\n", u, u, ws, h)
+	fmt.Fprintf(&b, "  && mkdir -p %s\n\n", ManagedSettingsDir)
 
-	b.WriteString("WORKDIR /workspace\n\n")
+	fmt.Fprintf(&b, "WORKDIR %s\n\n", ws)
 
 	// --- Switch to non-root user for Claude Code install ---
 	b.WriteString("# Switch to non-root user for Claude Code install\n")
-	b.WriteString("USER claude-bunker\n\n")
+	fmt.Fprintf(&b, "USER %s\n\n", u)
 
 	// --- Environment variables ---
 	b.WriteString("ENV DEVCONTAINER=true\n")
@@ -88,15 +88,15 @@ func generateBaseContent() string {
 	// --- Claude Code install (runs as non-root user) ---
 	b.WriteString("# Install Claude Code via native installer\n")
 	b.WriteString("RUN curl -fsSL https://claude.ai/install.sh | bash\n")
-	b.WriteString("ENV PATH=\"/home/claude-bunker/.local/bin:$PATH\"\n\n")
+	fmt.Fprintf(&b, "ENV PATH=\"%s/.local/bin:$PATH\"\n\n", h)
 
 	// --- COPY layers AFTER expensive installs (prevents cache busting) ---
 	b.WriteString("# COPY layers placed after expensive installs to avoid cache busting\n")
 	b.WriteString("USER root\n")
-	b.WriteString("COPY init-firewall.sh /usr/local/bin/\n")
-	b.WriteString("COPY tmux.conf /home/claude-bunker/.tmux.conf\n")
-	b.WriteString("RUN chmod +x /usr/local/bin/init-firewall.sh && \\\n")
-	b.WriteString("  chown claude-bunker:claude-bunker /home/claude-bunker/.tmux.conf\n\n")
+	fmt.Fprintf(&b, "COPY init-firewall.sh %s\n", FirewallScriptPath)
+	fmt.Fprintf(&b, "COPY tmux.conf %s/.tmux.conf\n", h)
+	fmt.Fprintf(&b, "RUN chmod +x %s && \\\n", FirewallScriptPath)
+	fmt.Fprintf(&b, "  chown %s:%s %s/.tmux.conf\n\n", u, u, h)
 
 	return b.String()
 }

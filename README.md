@@ -57,7 +57,7 @@ Think of it this way: `config.json` sets up the **room** Claude works in. `setti
 | Command | Description |
 |---------|-------------|
 | `claude-bunker [flags]` | Run Claude. All unknown flags pass through to the `claude` CLI |
-| `claude-bunker shell` | Open a zsh shell in the sandbox (for debugging or manual work) |
+| `claude-bunker shell` | Open a bash shell in the sandbox (for debugging or manual work) |
 | `claude-bunker status` | Show sandbox state: container info, uptime, active sessions |
 | `claude-bunker prune` | List and remove Docker volumes. Supports `--force` and `--all` |
 | `claude-bunker completion <shell>` | Generate shell completion script (bash, zsh, fish, powershell) |
@@ -104,7 +104,7 @@ Host machine                         Docker container
 |                           | mount  |                                |
 |  git push, git commit     |        |  Claude Code (as claude-bunker)|
 |  (done on host)           |        |  bubblewrap sandbox            |
-|                           |        |  zsh, tmux, git-delta, jq ...  |
+|                           |        |  bash, tmux, git, curl ...     |
 +---------------------------+        +--------------------------------+
 ```
 
@@ -132,18 +132,14 @@ The firewall uses a default-deny policy with an allowlist. Only these destinatio
 | `api.anthropic.com` | Claude Code API |
 | `statsig.anthropic.com`, `statsig.com` | Claude Code telemetry |
 | `sentry.io` | Claude Code error reporting |
-| `github.com` (all GitHub IP ranges) | Git operations, `gh` CLI |
+| `github.com`, `api.github.com` | Git operations, `gh` CLI |
 | `registry.npmjs.org` | npm package installs |
 | `pypi.org`, `files.pythonhosted.org` | Python package installs |
 | `marketplace.visualstudio.com`, `vscode.blob.core.windows.net`, `update.code.visualstudio.com` | VS Code Remote Containers support |
 
 All other outbound traffic is rejected immediately (ICMP admin-prohibited). IPv6 is fully blocked to prevent firewall bypass.
 
-On startup, the firewall verifies itself:
-- Confirms `example.com` is **blocked**
-- Confirms `api.github.com` is **allowed**
-
-If either check fails, the container refuses to start.
+On startup, the firewall verifies itself by confirming `example.com` is **blocked**. If the check fails, the container refuses to start.
 
 #### Dual domain allowlists
 
@@ -500,7 +496,7 @@ This adds domains to both the firewall and sandbox settings automatically. No fo
 
 ### Known trade-offs
 
-- **GitHub access is broad** -- the firewall allows all GitHub IP ranges (web + api + git). A prompt injection could theoretically exfiltrate data to a public GitHub repo. This is necessary for git operations to work. If your workflow keeps git operations on the host, you could remove GitHub IPs from the firewall.
+- **GitHub access is broad** -- the firewall allows `github.com` and `api.github.com`. A prompt injection could theoretically exfiltrate data to a public GitHub repo. This is necessary for git operations to work. If your workflow keeps git operations on the host, you could remove GitHub domains from the firewall.
 - **DNS resolution at startup** -- domain IPs are resolved once when the container starts. If an IP changes while the container is running, the new IP won't be reachable until restart. The sandbox layer provides domain-level filtering as a backup.
 - **AppArmor not enforced** -- Docker Desktop on macOS/Windows doesn't support AppArmor profiles. On Linux with AppArmor available, consider adding a custom profile for additional process-level restrictions.
 
@@ -530,7 +526,7 @@ claude-bunker/
   internal/
     config/                           # Configuration loading, fingerprinting, naming
     container/                        # Docker API (build, create, exec, copy)
-      scripts/                        # Embedded scripts (init-firewall.sh, tmux.conf, zshrc)
+      scripts/                        # Embedded scripts (init-firewall.sh, tmux.conf)
     sandbox/                          # Sandbox settings seeding
     platform/                         # Platform-specific helpers (TTY, paths)
   .goreleaser.yml                     # Release automation

@@ -24,35 +24,11 @@ import (
 // verbosity controls output level: -1 = quiet, 0 = normal, 1 = verbose.
 var verbosity int
 
-func info(msg string) {
-	if verbosity >= 0 {
-		fmt.Println("[claude-bunker]", msg)
-	}
-}
-func verbose(msg string) {
-	if verbosity >= 1 {
-		fmt.Println("[claude-bunker]", msg)
-	}
-}
-func warn(msg string) {
-	if verbosity >= 0 {
-		fmt.Fprintln(os.Stderr, "[claude-bunker] WARNING:", msg)
-	}
-}
-func die(msg string) {
-	fmt.Fprintln(os.Stderr, "[claude-bunker] ERROR:", msg)
-	if activeRunner != nil {
-		activeRunner.cleanup()
-	}
-	os.Exit(1)
-}
-
 // activeRunner is set during runInSandbox so signal handlers and die() can
 // access the runner for cleanup.
 var activeRunner *runner
 
-// runner holds all state for a single sandbox session, replacing the old
-// package-level cleanupState global.
+// runner holds all state for a single sandbox session.
 type runner struct {
 	mu        sync.Mutex
 	cleanedUp bool
@@ -67,7 +43,7 @@ type runner struct {
 	containerName string
 	containerID   string
 	imageTag      string
-	extraDomains  string
+	extraDomains  []string
 	ghToken       string
 	apiKey        string
 	oauthToken    string
@@ -77,8 +53,7 @@ type runner struct {
 	noCache bool   // true when --rebuild is used; passed to Docker build as NoCache
 
 	// Computed during resolveContainer, reused in buildAndCreate for fingerprint saving.
-	dockerfile string
-	scripts    map[string][]byte
+	buildInput config.BuildInput
 	fpResult   config.FingerprintResult
 }
 
@@ -305,13 +280,17 @@ func (r *runner) resolveNaming() {
 // resolveContainer checks fingerprints and existing container state to decide
 // whether to reuse, recreate, or rebuild.
 func (r *runner) resolveContainer() {
-	r.dockerfile = container.GenerateBaseDockerfile()
-	r.scripts = map[string][]byte{
-		"init-firewall.sh": container.InitFirewallScript(),
-		"tmux.conf":        container.TmuxConf(),
+	r.buildInput = config.BuildInput{
+		Version:    Version,
+		Dockerfile: container.GenerateBaseDockerfile(),
+		Scripts: map[string][]byte{
+			"init-firewall.sh": container.InitFirewallScript(),
+			"tmux.conf":        container.TmuxConf(),
+		},
+		ProjectCfg: r.projectCfg,
 	}
 
-	r.fpResult = config.CompareFingerprints(r.dockerfile, r.scripts, r.projectCfg, r.containerName)
+	r.fpResult = config.CompareFingerprints(r.buildInput, r.containerName)
 
 	if id, running := container.ContainerRunning(r.ctx, r.cli, r.containerName); running {
 		if r.fpResult.ImageMatch && r.fpResult.ContainerMatch {
@@ -365,7 +344,6 @@ func (r *runner) buildAndCreate() {
 		ImageTag:      r.imageTag,
 		Workspace:     r.workspace,
 		ProjectCfg:    r.projectCfg,
-		ExtraDomains:  r.extraDomains,
 		GhToken:       r.ghToken,
 		ApiKey:        r.apiKey,
 		OAuthToken:    r.oauthToken,
@@ -385,7 +363,7 @@ func (r *runner) buildAndCreate() {
 		die("Post-start failed: " + err.Error())
 	}
 
-	if err := config.SaveCombinedFingerprint(r.dockerfile, r.scripts, r.projectCfg, r.containerName); err != nil {
+	if err := config.SaveCombinedFingerprint(r.buildInput, r.containerName); err != nil {
 		warn("Failed to save fingerprint: " + err.Error())
 	}
 }
@@ -408,7 +386,7 @@ func (r *runner) seedSettings() {
 		warn("Failed to seed settings: " + err.Error())
 	}
 	if r.projectCfg.ShouldSeedHistory() {
-		if err := sandbox.SeedSessionHistory(r.ctx, r.cli, r.containerID, r.workspace); err != nil {
+		if err := sandbox.SeedSessionHistory(r.ctx, r.cli, r.containerID, r.workspace, log); err != nil {
 			warn("Failed to seed session history: " + err.Error())
 		}
 	}

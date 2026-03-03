@@ -2,9 +2,22 @@ package container
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
+
+// validAptPkg matches valid Debian package names: alphanumeric, plus, minus,
+// dots, and colons (for arch-qualified names like libc6:amd64). Rejects
+// shell metacharacters to prevent command injection via config.json apt field.
+var validAptPkg = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.+\-:]+$`)
+
+// validEnvKey matches valid environment variable names per POSIX: starts with
+// letter or underscore, followed by letters, digits, or underscores.
+var validEnvKey = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// validFeatureID matches safe feature IDs: alphanumeric, hyphens, underscores.
+var validFeatureID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_\-]*$`)
 
 // GenerateDockerfile appends apt packages, feature install layers, and user
 // env vars to the base Dockerfile. The generated Dockerfile always ends with
@@ -28,6 +41,11 @@ func GenerateDockerfile(baseDockerfile string, features []ResolvedFeature, aptPa
 		sorted := make([]string, len(aptPackages))
 		copy(sorted, aptPackages)
 		sort.Strings(sorted)
+		for _, pkg := range sorted {
+			if !validAptPkg.MatchString(pkg) {
+				return "", fmt.Errorf("invalid apt package name %q: must match %s", pkg, validAptPkg.String())
+			}
+		}
 		b.WriteString("\n# Apt packages\n")
 		b.WriteString("USER root\n")
 		b.WriteString("RUN apt-get update && apt-get install -y --no-install-recommends \\\n")
@@ -39,6 +57,10 @@ func GenerateDockerfile(baseDockerfile string, features []ResolvedFeature, aptPa
 
 	// Append feature install layers
 	for _, f := range features {
+		if !validFeatureID.MatchString(f.ID) {
+			return "", fmt.Errorf("invalid feature ID %q: must match %s", f.ID, validFeatureID.String())
+		}
+
 		b.WriteString(fmt.Sprintf("\n# Feature: %s (%s)\n", f.ID, f.Source))
 
 		// containerEnv BEFORE install — per the devcontainer spec, these ENV
@@ -47,6 +69,9 @@ func GenerateDockerfile(baseDockerfile string, features []ResolvedFeature, aptPa
 		if len(f.Env) > 0 {
 			envKeys := sortedStringMapKeys(f.Env)
 			for _, k := range envKeys {
+				if !validEnvKey.MatchString(k) {
+					return "", fmt.Errorf("invalid feature env var key %q in feature %s", k, f.ID)
+				}
 				b.WriteString(fmt.Sprintf("ENV %s=%q\n", k, f.Env[k]))
 			}
 		}
@@ -64,6 +89,9 @@ func GenerateDockerfile(baseDockerfile string, features []ResolvedFeature, aptPa
 		b.WriteString("\n# User environment variables\n")
 		keys := make([]string, 0, len(userEnv))
 		for k := range userEnv {
+			if !validEnvKey.MatchString(k) {
+				return "", fmt.Errorf("invalid env var key %q: must match %s", k, validEnvKey.String())
+			}
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
@@ -73,7 +101,7 @@ func GenerateDockerfile(baseDockerfile string, features []ResolvedFeature, aptPa
 	}
 
 	// Restore working directory and end with the unprivileged user
-	b.WriteString("\nWORKDIR /workspace\n")
+	b.WriteString("\nWORKDIR " + ContainerWorkspace + "\n")
 	b.WriteString(fmt.Sprintf("USER %s\n", ContainerUser))
 
 	return b.String(), nil

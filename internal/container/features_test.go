@@ -188,10 +188,10 @@ func TestWriteFeatureFiles(t *testing.T) {
 		t.Fatalf("reading env file: %v", err)
 	}
 	envContent := string(envData)
-	if want := `INSTALLFOO="true"`; !strings.Contains(envContent, want) {
+	if want := `INSTALLFOO='true'`; !strings.Contains(envContent, want) {
 		t.Errorf("env file missing %s, got:\n%s", want, envContent)
 	}
-	if want := `VERSION="1.22"`; !strings.Contains(envContent, want) {
+	if want := `VERSION='1.22'`; !strings.Contains(envContent, want) {
 		t.Errorf("env file missing %s, got:\n%s", want, envContent)
 	}
 

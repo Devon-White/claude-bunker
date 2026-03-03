@@ -9,6 +9,14 @@ import (
 	"strings"
 )
 
+// Volume and image name prefixes. Used by naming functions to construct names
+// and by volume/image listing to discover claude-bunker resources.
+const (
+	BashHistoryVolumePrefix = "claude-code-bashhistory-"
+	ClaudeConfigVolumePrefix = "claude-code-config-"
+	ImagePrefix              = "claude-bunker"
+)
+
 var nonAlnum = regexp.MustCompile(`[^a-z0-9-]+`)
 var multiDash = regexp.MustCompile(`-{2,}`)
 
@@ -50,15 +58,15 @@ func ContainerName(workspace string) string {
 
 // BashHistoryVolume returns the volume name for bash history persistence.
 func BashHistoryVolume(containerName string) string {
-	return "claude-code-bashhistory-" + containerName
+	return BashHistoryVolumePrefix + containerName
 }
 
 // ClaudeConfigVolume returns the volume name for claude config persistence.
 func ClaudeConfigVolume(containerName string) string {
-	return "claude-code-config-" + containerName
+	return ClaudeConfigVolumePrefix + containerName
 }
 
 // ImageTag returns the Docker image tag for this container.
 func ImageTag(containerName string) string {
-	return "claude-bunker:" + containerName
+	return ImagePrefix + ":" + containerName
 }

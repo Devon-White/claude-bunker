@@ -8,38 +8,24 @@ if [ "${_FW_TIMEOUT_SET:-}" != "1" ]; then
     exec timeout 60 "$0" "$@"
 fi
 
-# 1. Extract Docker DNS info BEFORE any flushing
-DOCKER_DNS_RULES=$(iptables-save -t nat | grep "127\.0\.0\.11" || true)
-
-# Flush existing rules
+# Flush filter and mangle rules. Leave the nat table intact so Docker's
+# embedded DNS routing (127.0.0.11 NAT interception) keeps working without
+# the fragile save/grep/restore dance the upstream script requires.
 iptables -F
 iptables -X
-iptables -t nat -F
-iptables -t nat -X
 iptables -t mangle -F
 iptables -t mangle -X
-
-# 2. Selectively restore ONLY internal Docker DNS resolution
-if [ -n "$DOCKER_DNS_RULES" ]; then
-    echo "Restoring Docker DNS rules..."
-    iptables -t nat -N DOCKER_OUTPUT 2>/dev/null || true
-    iptables -t nat -N DOCKER_POSTROUTING 2>/dev/null || true
-    echo "$DOCKER_DNS_RULES" | xargs -L 1 iptables -t nat
-else
-    echo "No Docker DNS rules to restore"
-fi
 
 # ---------------------------------------------------------------------------
 # FAIL-CLOSED: set DROP policies BEFORE any network operations so that if
 # anything below fails, the container is locked down rather than left open.
 # ---------------------------------------------------------------------------
 
-# Allow Docker embedded DNS (127.0.0.11) so DNS resolution works under DROP
-iptables -A OUTPUT -d 127.0.0.11/32 -p udp --dport 53 -j ACCEPT
-iptables -A OUTPUT -d 127.0.0.11/32 -p tcp --dport 53 -j ACCEPT
-
-# Allow outbound DNS
+# Allow outbound DNS (matches upstream Claude Code devcontainer).
+# The IP allowlist already prevents connections to unauthorized destinations,
+# making destination-restricted DNS unnecessary in a devcontainer context.
 iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
 
 # Allow localhost
 iptables -A INPUT -i lo -j ACCEPT
@@ -130,42 +116,34 @@ resolve_and_allow() {
 
 # ---------------------------------------------------------------------------
 # Populate the allowlist by resolving each domain sequentially.
+# The domain list path is passed as $1 by the Go binary (one domain per
+# line, builtin + user extras). This keeps Go as the single source of truth.
 # ---------------------------------------------------------------------------
 
-BUILTIN_DOMAINS=(
-    "github.com"
-    "api.github.com"
-    "registry.npmjs.org"
-    "api.anthropic.com"
-    "sentry.io"
-    "statsig.anthropic.com"
-    "statsig.com"
-    "marketplace.visualstudio.com"
-    "vscode.blob.core.windows.net"
-    "update.code.visualstudio.com"
-)
+CRITICAL_DOMAIN="api.anthropic.com"
 
-echo "Resolving ${#BUILTIN_DOMAINS[@]} domains..."
+# The domains file path is passed as $1 by the Go binary, keeping Go as the
+# single source of truth. Fall back to the conventional path for manual runs.
+DOMAINS_FILE="${1:-/tmp/.bunker-domains}"
+if [ ! -f "$DOMAINS_FILE" ]; then
+    echo "FATAL: $DOMAINS_FILE not found"
+    exit 1
+fi
 
-# api.anthropic.com is critical — failure is fatal
-for domain in "${BUILTIN_DOMAINS[@]}"; do
-    if [ "$domain" = "api.anthropic.com" ]; then
+DOMAIN_COUNT=0
+while IFS= read -r domain || [ -n "$domain" ]; do
+    # Strip trailing \r (windows line endings) — Go already trims whitespace,
+    # so no subprocess needed for general whitespace stripping.
+    domain="${domain%$'\r'}"
+    [ -z "$domain" ] && continue
+    DOMAIN_COUNT=$((DOMAIN_COUNT + 1))
+    if [ "$domain" = "$CRITICAL_DOMAIN" ]; then
         resolve_and_allow "$domain" 1
     else
         resolve_and_allow "$domain" 0
     fi
-done
-
-# Extra domains from .claude-bunker config
-EXTRA_DOMAINS=$(cat /tmp/.bunker-extra-domains 2>/dev/null || true)
-if [ -n "$EXTRA_DOMAINS" ]; then
-    while IFS= read -r domain; do
-        domain=$(echo "$domain" | tr -d '[:space:]')
-        [ -z "$domain" ] && continue
-        echo "Resolving extra domain: $domain..."
-        resolve_and_allow "$domain" 0
-    done < <(echo "$EXTRA_DOMAINS" | tr ',' '\n')
-fi
+done < "$DOMAINS_FILE"
+echo "Resolved $DOMAIN_COUNT domains"
 
 # Remove the temporary bootstrap HTTPS rule — no longer needed
 iptables -D OUTPUT -p tcp --dport 443 -j ACCEPT
@@ -188,12 +166,20 @@ if ! echo "$VERIFY_OUTPUT" | grep -q -- "-P OUTPUT DROP"; then
 fi
 echo "Firewall verification passed — OUTPUT policy is DROP"
 
+# Verify that non-allowlisted traffic is actually blocked.
+# This runs in all modes to ensure the firewall is working correctly.
+if curl --connect-timeout 2 --max-time 3 https://example.com >/dev/null 2>&1; then
+    echo "ERROR: Firewall verification failed - was able to reach https://example.com"
+    exit 1
+else
+    echo "Verified: non-allowlisted traffic is blocked"
+fi
+
 if [ "${BUNKER_VERBOSE:-0}" = "1" ]; then
     echo "Running verbose network verification..."
-    if curl --connect-timeout 5 https://example.com >/dev/null 2>&1; then
-        echo "ERROR: Firewall verification failed - was able to reach https://example.com"
-        exit 1
+    if curl --connect-timeout 5 https://api.anthropic.com >/dev/null 2>&1; then
+        echo "Verified: api.anthropic.com is reachable"
     else
-        echo "Verified: unable to reach https://example.com (blocked)"
+        echo "WARNING: api.anthropic.com is not reachable (may be a transient DNS issue)"
     fi
 fi

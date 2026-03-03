@@ -308,6 +308,13 @@ func sortFeatures(features []ResolvedFeature) {
 		sort.Slice(remaining, func(i, j int) bool {
 			return remaining[i].ID < remaining[j].ID
 		})
+
+		cycleIDs := make([]string, len(remaining))
+		for i, f := range remaining {
+			cycleIDs[i] = f.ID
+		}
+		fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: dependency cycle detected among features: %s — installing in alphabetical order\n", strings.Join(cycleIDs, ", "))
+
 		result = append(result, remaining...)
 	}
 
@@ -330,7 +337,11 @@ func writeFeatureFiles(featureDir string, opts map[string]interface{}) error {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			envBuf.WriteString(fmt.Sprintf("%s=%q\n", safeOptionEnvName(k), fmt.Sprintf("%v", opts[k])))
+			// Use single quotes to prevent shell command substitution.
+			// Escape embedded single quotes with the '\'' idiom.
+			val := fmt.Sprintf("%v", opts[k])
+			val = strings.ReplaceAll(val, "'", `'\''`)
+			envBuf.WriteString(fmt.Sprintf("%s='%s'\n", safeOptionEnvName(k), val))
 		}
 	}
 	if err := os.WriteFile(filepath.Join(featureDir, "devcontainer-features.env"), []byte(envBuf.String()), 0644); err != nil {

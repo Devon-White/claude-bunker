@@ -22,105 +22,87 @@ import (
 // safely under the kernel limit.
 const maxArgSize = 96 * 1024
 
-// CopyDirToContainer recursively copies an entire host directory tree into a
-// container directory, preserving the subdirectory structure.
-func CopyDirToContainer(ctx context.Context, cli *client.Client, containerID, hostDir, containerDir string) error {
+// buildDirTar creates a tar archive from a host directory tree. The optional
+// skip function is called for each entry with its path relative to hostDir;
+// return true to exclude the entry (and its subtree for directories).
+// Returns the tar buffer and file count. Unreadable entries are silently skipped.
+func buildDirTar(hostDir string, skip func(relPath string, isDir bool) bool) (*bytes.Buffer, int, error) {
 	base := filepath.Clean(hostDir)
 
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	fileCount := 0
 
-	err := filepath.Walk(base, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
+	err := filepath.Walk(base, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
 			return nil // skip unreadable entries
 		}
 
-		relPath, err := filepath.Rel(base, path)
-		if err != nil {
+		relPath, relErr := filepath.Rel(base, path)
+		if relErr != nil {
 			return nil
 		}
-		// Normalize to forward slashes for tar
 		relPath = strings.ReplaceAll(relPath, "\\", "/")
 
-		if info.IsDir() {
-			if relPath == "." {
-				return nil
+		if relPath == "." {
+			return nil
+		}
+
+		if skip != nil && skip(relPath, info.IsDir()) {
+			if info.IsDir() {
+				return filepath.SkipDir
 			}
-			hdr := &tar.Header{
+			return nil
+		}
+
+		if info.IsDir() {
+			return tw.WriteHeader(&tar.Header{
 				Typeflag: tar.TypeDir,
 				Name:     relPath + "/",
 				Mode:     0755,
 				ModTime:  info.ModTime(),
-			}
-			return tw.WriteHeader(hdr)
+			})
 		}
 
-		data, err := os.ReadFile(path)
-		if err != nil {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
 			return nil // skip unreadable files
 		}
 
-		hdr := &tar.Header{
+		if err := tw.WriteHeader(&tar.Header{
 			Name:    relPath,
 			Mode:    0600,
 			Size:    int64(len(data)),
 			ModTime: info.ModTime(),
-		}
-		if err := tw.WriteHeader(hdr); err != nil {
+		}); err != nil {
 			return err
 		}
-		if _, err := tw.Write(data); err != nil {
-			return err
+		_, writeErr := tw.Write(data)
+		if writeErr == nil {
+			fileCount++
 		}
-		fileCount++
-		return nil
+		return writeErr
 	})
 	if err != nil {
-		return fmt.Errorf("walking %s: %w", hostDir, err)
+		return nil, 0, fmt.Errorf("walking %s: %w", hostDir, err)
 	}
 
 	if err := tw.Close(); err != nil {
-		return err
+		return nil, 0, err
 	}
 
-	if fileCount == 0 {
-		return nil // nothing to copy
-	}
-
-	containerDir = strings.ReplaceAll(containerDir, "\\", "/")
-	return cli.CopyToContainer(ctx, containerID, containerDir, &buf, container.CopyToContainerOptions{})
+	return &buf, fileCount, nil
 }
 
-// CopyContentToContainer writes in-memory content as a single file into the
-// container using exec + base64. This avoids the Docker archive API
-// (CopyToContainer) which silently fails on tmpfs mounts with Docker Desktop
-// for Windows.
-//
-// For small payloads the base64 data is passed as a command-line argument. For
-// large payloads it is piped via stdin to avoid Linux's MAX_ARG_STRLEN limit.
-func CopyContentToContainer(ctx context.Context, cli *client.Client, containerID string, content []byte, containerPath string) error {
-	encoded := base64.StdEncoding.EncodeToString(content)
-	containerPath = strings.ReplaceAll(containerPath, "\\", "/")
-
-	if len(content) <= maxArgSize {
-		_, err := ExecNonInteractive(ctx, cli, containerID, "root",
-			[]string{"sh", "-c", "echo \"$1\" | base64 -d > \"$2\"", "_", encoded, containerPath})
-		return err
-	}
-
-	return copyContentViaStdin(ctx, cli, containerID, encoded, containerPath)
-}
-
-// copyContentViaStdin pipes base64-encoded data through stdin into the
-// container, avoiding command-line argument size limits.
-func copyContentViaStdin(ctx context.Context, cli *client.Client, containerID, encoded, containerPath string) error {
+// execWithStdin runs a command in the container, piping data to its stdin,
+// and returns an error if the command fails.
+func execWithStdin(ctx context.Context, cli *client.Client, containerID, user string, cmd []string, stdin []byte) error {
 	execCfg := container.ExecOptions{
-		User:         "root",
+		User:         user,
 		AttachStdin:  true,
 		AttachStdout: true,
 		AttachStderr: true,
-		Cmd:          []string{"sh", "-c", "base64 -d > \"$1\"", "_", containerPath},
+		Cmd:          cmd,
 	}
 
 	execResp, err := cli.ContainerExecCreate(ctx, containerID, execCfg)
@@ -134,15 +116,13 @@ func copyContentViaStdin(ctx context.Context, cli *client.Client, containerID, e
 	}
 	defer attachResp.Close()
 
-	// Write the base64 data to stdin, then close to signal EOF.
-	if _, err := attachResp.Conn.Write([]byte(encoded)); err != nil {
+	if _, err := attachResp.Conn.Write(stdin); err != nil {
 		return fmt.Errorf("writing to exec stdin: %w", err)
 	}
 	if err := attachResp.CloseWrite(); err != nil {
 		return fmt.Errorf("closing exec stdin: %w", err)
 	}
 
-	// Drain stdout/stderr so the exec process can finish.
 	var stdout, stderr bytes.Buffer
 	_, _ = stdcopy.StdCopy(&stdout, &stderr, attachResp.Reader)
 
@@ -151,23 +131,64 @@ func copyContentViaStdin(ctx context.Context, cli *client.Client, containerID, e
 		return fmt.Errorf("inspecting exec: %w", err)
 	}
 	if inspect.ExitCode != 0 {
-		return fmt.Errorf("copy via stdin exited with code %d: %s", inspect.ExitCode, stderr.String())
+		return fmt.Errorf("exec exited with code %d: %s", inspect.ExitCode, stderr.String())
 	}
 
 	return nil
 }
 
-// CopyFileToContainer copies a single file from the host into the container.
-// Delegates to CopyContentToContainer (exec+base64) to avoid cli.CopyToContainer
-// which silently fails on tmpfs mounts with Docker Desktop for Windows.
-func CopyFileToContainer(ctx context.Context, cli *client.Client, containerID, hostPath, containerDir string) error {
-	data, err := os.ReadFile(hostPath)
+// CopyDirToContainer recursively copies an entire host directory tree into a
+// container directory, preserving the subdirectory structure.
+func CopyDirToContainer(ctx context.Context, cli *client.Client, containerID, hostDir, containerDir string) error {
+	buf, fileCount, err := buildDirTar(hostDir, nil)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", hostPath, err)
+		return err
+	}
+	if fileCount == 0 {
+		return nil
 	}
 
-	containerDir = strings.TrimRight(strings.ReplaceAll(containerDir, "\\", "/"), "/")
-	containerPath := containerDir + "/" + filepath.Base(hostPath)
+	containerDir = strings.ReplaceAll(containerDir, "\\", "/")
+	return cli.CopyToContainer(ctx, containerID, containerDir, buf, container.CopyToContainerOptions{})
+}
 
-	return CopyContentToContainer(ctx, cli, containerID, data, containerPath)
+// CopyDirToContainerExec copies a host directory tree into a container path
+// by piping a tar archive through docker exec. This is the Docker-recommended
+// approach for writing to tmpfs mounts, where the archive API (CopyToContainer)
+// silently writes to the hidden layer beneath the mount.
+//
+// The optional skip function is called for each entry with its path relative
+// to hostDir. Return true to skip the entry (and its subtree for directories).
+func CopyDirToContainerExec(ctx context.Context, cli *client.Client, containerID, hostDir, containerDir string, skip func(relPath string, isDir bool) bool) error {
+	buf, fileCount, err := buildDirTar(hostDir, skip)
+	if err != nil {
+		return err
+	}
+	if fileCount == 0 {
+		return nil
+	}
+
+	containerDir = strings.ReplaceAll(containerDir, "\\", "/")
+	return execWithStdin(ctx, cli, containerID, "root",
+		[]string{"tar", "xf", "-", "-C", containerDir}, buf.Bytes())
+}
+
+// CopyContentToContainer writes in-memory content as a single file into the
+// container using exec + base64. This avoids the Docker archive API
+// (CopyToContainer) which silently fails on tmpfs mounts.
+//
+// For small payloads the base64 data is passed as a command-line argument. For
+// large payloads it is piped via stdin to avoid Linux's MAX_ARG_STRLEN limit.
+func CopyContentToContainer(ctx context.Context, cli *client.Client, containerID string, content []byte, containerPath string) error {
+	encoded := base64.StdEncoding.EncodeToString(content)
+	containerPath = strings.ReplaceAll(containerPath, "\\", "/")
+
+	if len(content) <= maxArgSize {
+		_, err := ExecNonInteractive(ctx, cli, containerID, "root",
+			[]string{"sh", "-c", "echo \"$1\" | base64 -d > \"$2\"", "_", encoded, containerPath})
+		return err
+	}
+
+	return execWithStdin(ctx, cli, containerID, "root",
+		[]string{"sh", "-c", "base64 -d > \"$1\"", "_", containerPath}, []byte(encoded))
 }

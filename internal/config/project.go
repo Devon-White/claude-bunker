@@ -18,14 +18,13 @@ type ProjectConfig struct {
 	Features          map[string]map[string]interface{} `json:"features"`
 	Apt               []string                          `json:"apt"`
 	Env               map[string]string                 `json:"env"`
-	PostStartCommand  string                            `json:"postStartCommand"`
-	PostCreateCommand string                            `json:"postCreateCommand,omitempty"` // deprecated: use postStartCommand
+	PostStartCommand string `json:"postStartCommand"`
 	GhToken           string                            `json:"ghToken,omitempty"`
 	SeedHistory       *bool                             `json:"seedHistory,omitempty"`
 }
 
 // ShouldSeedHistory returns whether session history should be seeded.
-// Defaults to true for backward compatibility when not explicitly set.
+// Defaults to true when not explicitly set.
 func (c ProjectConfig) ShouldSeedHistory() bool {
 	if c.SeedHistory == nil {
 		return true
@@ -54,17 +53,13 @@ func LoadProjectConfig(workspace string) (ProjectConfig, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return ProjectConfig{}, err
 	}
+	expandProjectConfig(&cfg)
 	// Normalize domain whitespace before validation
 	for i, d := range cfg.AllowDomains {
 		cfg.AllowDomains[i] = strings.TrimSpace(d)
 	}
 	if err := validateDomains(cfg.AllowDomains); err != nil {
 		return ProjectConfig{}, err
-	}
-	// Backward compat: postCreateCommand -> postStartCommand
-	if cfg.PostStartCommand == "" && cfg.PostCreateCommand != "" {
-		cfg.PostStartCommand = cfg.PostCreateCommand
-		cfg.PostCreateCommand = ""
 	}
 	return cfg, nil
 }

@@ -38,7 +38,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	// Find container (running or stopped)
 	f := filters.NewArgs()
-	f.Add("label", "claude-bunker="+containerName)
+	f.Add("label", ctr.LabelKey+"="+containerName)
 	containers, err := cli.ContainerList(ctx, container.ListOptions{
 		All:     true,
 		Filters: f,
@@ -47,23 +47,23 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to query containers: %w", err)
 	}
 
-	fmt.Printf("Workspace:  %s\n", workspace)
-	fmt.Printf("Container:  %s\n", containerName)
-	fmt.Printf("Image:      %s\n", imageTag)
+	fmt.Println(kvLine("Workspace:", workspace))
+	fmt.Println(kvLine("Container:", containerName))
+	fmt.Println(kvLine("Image:", imageTag))
 
 	if len(containers) == 0 {
-		fmt.Printf("State:      not created\n")
+		fmt.Println(kvLineStyled("State:", "not created", stateStyle("not created")))
 		return nil
 	}
 
 	c := containers[0]
 	state := c.State
-	fmt.Printf("State:      %s\n", state)
+	fmt.Println(kvLineStyled("State:", state, stateStyle(state)))
 	idShort := c.ID
 	if len(idShort) > 12 {
 		idShort = idShort[:12]
 	}
-	fmt.Printf("ID:         %s\n", idShort)
+	fmt.Println(kvLine("ID:", idShort))
 
 	if state == "running" {
 		// Show uptime
@@ -72,16 +72,16 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			started, err := time.Parse(time.RFC3339Nano, inspect.State.StartedAt)
 			if err == nil {
 				uptime := time.Since(started).Truncate(time.Second)
-				fmt.Printf("Uptime:     %s\n", formatDuration(uptime))
+				fmt.Println(kvLine("Uptime:", formatDuration(uptime)))
 			}
 		}
 
 		// Check for active sessions
 		sessions := listActiveSessions(ctx, cli, c.ID)
 		if len(sessions) > 0 {
-			fmt.Printf("Sessions:   %s\n", strings.Join(sessions, ", "))
+			fmt.Println(kvLine("Sessions:", strings.Join(sessions, ", ")))
 		} else {
-			fmt.Printf("Sessions:   none\n")
+			fmt.Println(kvLine("Sessions:", "none"))
 		}
 	}
 
@@ -90,7 +90,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	if err == nil {
 		created, err := time.Parse(time.RFC3339Nano, imgInspect.Created)
 		if err == nil {
-			fmt.Printf("Image built: %s\n", created.Local().Format("2006-01-02 15:04:05"))
+			fmt.Println(kvLine("Image built:", created.Local().Format("2006-01-02 15:04:05")))
 		}
 	}
 
@@ -113,35 +113,35 @@ func printResolvedConfig(cfg config.ProjectConfig) {
 	}
 
 	fmt.Println()
-	fmt.Println("Config:")
+	fmt.Println(sectionHeaderStyle.Render("Config:"))
 	if len(cfg.Apt) > 0 {
-		fmt.Printf("  apt:        %s\n", strings.Join(cfg.Apt, ", "))
+		fmt.Println(configLine("apt:", strings.Join(cfg.Apt, ", ")))
 	}
 	if len(cfg.Features) > 0 {
 		names := make([]string, 0, len(cfg.Features))
 		for name := range cfg.Features {
 			names = append(names, name)
 		}
-		fmt.Printf("  features:   %s\n", strings.Join(names, ", "))
+		fmt.Println(configLine("features:", strings.Join(names, ", ")))
 	}
 	if len(cfg.Env) > 0 {
 		pairs := make([]string, 0, len(cfg.Env))
 		for k, v := range cfg.Env {
 			pairs = append(pairs, k+"="+v)
 		}
-		fmt.Printf("  env:        %s\n", strings.Join(pairs, ", "))
+		fmt.Println(configLine("env:", strings.Join(pairs, ", ")))
 	}
 	if len(cfg.AllowDomains) > 0 {
-		fmt.Printf("  domains:    %s\n", strings.Join(cfg.AllowDomains, ", "))
+		fmt.Println(configLine("domains:", strings.Join(cfg.AllowDomains, ", ")))
 	}
 	if cfg.PostStartCommand != "" {
-		fmt.Printf("  postStart:  %s\n", cfg.PostStartCommand)
+		fmt.Println(configLine("postStart:", cfg.PostStartCommand))
 	}
 	if cfg.Workspace != "" {
-		fmt.Printf("  workspace:  %s\n", cfg.Workspace)
+		fmt.Println(configLine("workspace:", cfg.Workspace))
 	}
 	if len(cfg.Exclude) > 0 {
-		fmt.Printf("  exclude:    %s\n", strings.Join(cfg.Exclude, ", "))
+		fmt.Println(configLine("exclude:", strings.Join(cfg.Exclude, ", ")))
 	}
 }
 

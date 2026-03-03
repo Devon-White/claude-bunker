@@ -29,7 +29,7 @@ func TestLoadProjectConfig_Valid(t *testing.T) {
 			"node": {"version": "20"}
 		},
 		"env": {"PYTHONDONTWRITEBYTECODE": "1"},
-		"postCreateCommand": "pip install -r requirements.txt"
+		"postStartCommand": "pip install -r requirements.txt"
 	}`
 	os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(data), 0644)
 
@@ -52,12 +52,8 @@ func TestLoadProjectConfig_Valid(t *testing.T) {
 	if cfg.Env["PYTHONDONTWRITEBYTECODE"] != "1" {
 		t.Errorf("env PYTHONDONTWRITEBYTECODE = %q", cfg.Env["PYTHONDONTWRITEBYTECODE"])
 	}
-	// Backward compat: postCreateCommand in JSON should be migrated to PostStartCommand
 	if cfg.PostStartCommand != "pip install -r requirements.txt" {
 		t.Errorf("PostStartCommand = %q, want %q", cfg.PostStartCommand, "pip install -r requirements.txt")
-	}
-	if cfg.PostCreateCommand != "" {
-		t.Errorf("PostCreateCommand should be empty after migration, got %q", cfg.PostCreateCommand)
 	}
 }
 

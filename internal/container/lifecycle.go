@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,12 +19,11 @@ import (
 	"github.com/Devon-White/claude-bunker/internal/config"
 )
 
-const labelKey = "claude-bunker"
 
 // FindByLabel finds a container (running or stopped) with the claude-bunker label.
 func FindByLabel(ctx context.Context, cli *client.Client, containerName string) (string, error) {
 	f := filters.NewArgs()
-	f.Add("label", labelKey+"="+containerName)
+	f.Add("label", LabelKey+"="+containerName)
 	containers, err := cli.ContainerList(ctx, container.ListOptions{
 		All:     true,
 		Filters: f,
@@ -40,7 +40,7 @@ func FindByLabel(ctx context.Context, cli *client.Client, containerName string) 
 // ContainerRunning checks if a container with the label is currently running.
 func ContainerRunning(ctx context.Context, cli *client.Client, containerName string) (string, bool) {
 	f := filters.NewArgs()
-	f.Add("label", labelKey+"="+containerName)
+	f.Add("label", LabelKey+"="+containerName)
 	containers, err := cli.ContainerList(ctx, container.ListOptions{
 		All:     false, // only running
 		Filters: f,
@@ -57,7 +57,6 @@ type CreateAndStartOpts struct {
 	ImageTag      string
 	Workspace     string
 	ProjectCfg    config.ProjectConfig
-	ExtraDomains  string
 	GhToken       string // GitHub fine-grained PAT for git auth (injected via tmpfs)
 	ApiKey        string // Anthropic API key for Claude auth (injected via tmpfs)
 	OAuthToken    string // Claude OAuth token for Claude auth (injected via tmpfs)
@@ -77,13 +76,13 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 		{
 			Type:        mount.TypeBind,
 			Source:      opts.Workspace,
-			Target:      "/workspace",
+			Target:      ContainerWorkspace,
 			Consistency: mount.ConsistencyDelegated,
 		},
 		{
 			Type:   mount.TypeVolume,
 			Source: bashVol,
-			Target: "/commandhistory",
+			Target: CommandHistoryDir,
 		},
 		{
 			Type:   mount.TypeVolume,
@@ -92,7 +91,7 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 		},
 		{
 			Type:   mount.TypeTmpfs,
-			Target: "/workspace/.claude",
+			Target: ContainerWorkspace + "/.claude",
 		},
 	}
 
@@ -100,7 +99,7 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 	if opts.GhToken != "" || opts.ApiKey != "" || opts.OAuthToken != "" {
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeTmpfs,
-			Target: "/run/secrets",
+			Target: SecretsDir,
 			TmpfsOptions: &mount.TmpfsOptions{
 				Mode: 0700,
 			},
@@ -109,16 +108,15 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 
 	// Add tmpfs mounts for excluded paths
 	for _, p := range opts.ProjectCfg.Exclude {
-		clean := p
-		if len(clean) > 0 && clean[0] == '.' && len(clean) > 1 && clean[1] == '/' {
-			clean = clean[2:]
-		}
-		if len(clean) > 0 && clean[len(clean)-1] == '/' {
-			clean = clean[:len(clean)-1]
+		// filepath.Clean normalizes leading ./, trailing /, and .. components.
+		// Then verify the result stays under the workspace to prevent traversal.
+		target := filepath.Clean(ContainerWorkspace + "/" + p)
+		if !strings.HasPrefix(target, ContainerWorkspace+"/") || target == ContainerWorkspace {
+			continue // skip paths that escape /workspace
 		}
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeTmpfs,
-			Target: "/workspace/" + clean,
+			Target: target,
 		})
 	}
 
@@ -139,17 +137,13 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 			env = append(env, k+"="+v)
 		}
 	}
-	if opts.ExtraDomains != "" {
-		env = append(env, "CLAUDE_BUNKER_EXTRA_DOMAINS="+opts.ExtraDomains)
-	}
-
 	containerCfg := &container.Config{
 		Image:      opts.ImageTag,
 		User:       ContainerUser,
 		WorkingDir: workdir,
 		Env:        env,
 		Labels: map[string]string{
-			labelKey: opts.ContainerName,
+			LabelKey: opts.ContainerName,
 		},
 		Cmd:       []string{"sleep", "infinity"},
 		Tty:       false,
@@ -187,7 +181,7 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 
 // RunPostStartOpts contains options for post-start container setup.
 type RunPostStartOpts struct {
-	ExtraDomains     string
+	ExtraDomains     []string
 	PostStartCommand string
 	GhToken          string
 	ApiKey           string
@@ -207,20 +201,25 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 
 	// 1. Git safe directory
 	_, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
-		[]string{"git", "config", "--global", "--add", "safe.directory", "/workspace"})
+		[]string{"git", "config", "--global", "--add", "safe.directory", ContainerWorkspace})
 	if err != nil {
 		return fmt.Errorf("git config: %w", err)
 	}
 
-	// 2. Write extra domains to temp file (using Docker API to avoid shell injection)
+	// 2. Write all firewall domains (builtin + user extras) to temp file.
+	// The firewall script reads this file instead of maintaining its own list,
+	// keeping the Go code as the single source of truth for allowed domains.
+	allDomains := BuiltinDomains()
+	allDomains = append(allDomains, opts.ExtraDomains...)
 	if err := CopyContentToContainer(ctx, cli, containerID,
-		[]byte(opts.ExtraDomains), "/tmp/.bunker-extra-domains"); err != nil {
-		return fmt.Errorf("writing extra domains: %w", err)
+		[]byte(strings.Join(allDomains, "\n")), DomainsFilePath); err != nil {
+		return fmt.Errorf("writing firewall domains: %w", err)
 	}
 
-	// 3. Run firewall init (exec runs as root, no sudo needed)
+	// 3. Run firewall init (exec runs as root, no sudo needed).
+	// Pass the domains file path as an argument so Go is the single source of truth.
 	_, err = ExecNonInteractive(ctx, cli, containerID, "root",
-		[]string{"/usr/local/bin/init-firewall.sh"})
+		[]string{FirewallScriptPath, DomainsFilePath})
 	if err != nil {
 		return fmt.Errorf("init-firewall.sh: %w", err)
 	}
@@ -272,9 +271,9 @@ func injectAuthSecrets(ctx context.Context, cli *client.Client, containerID stri
 	// Build a single root script that writes all secrets + wrapper + sets permissions.
 	var script strings.Builder
 	script.WriteString("set -e\n")
-	script.WriteString("chmod 711 /run/secrets\n")
+	fmt.Fprintf(&script, "chmod 711 %s\n", SecretsDir)
 
-	ug := ContainerUser + ":" + ContainerUser
+	ug := ContainerUserGroup
 
 	writeSecretFiles(&script, ug, opts)
 	createAuthWrapper(&script, ug, opts)
@@ -287,7 +286,7 @@ func injectAuthSecrets(ctx context.Context, cli *client.Client, containerID stri
 
 	// Single user exec: git credential helper (if gh token provided)
 	if opts.GhToken != "" {
-		credentialHelper := `!f() { echo "protocol=https"; echo "host=github.com"; echo "username=x-access-token"; echo "password=$(cat /run/secrets/gh_token)"; }; f`
+		credentialHelper := fmt.Sprintf(`!f() { echo "protocol=https"; echo "host=github.com"; echo "username=x-access-token"; echo "password=$(cat %s/gh_token)"; }; f`, SecretsDir)
 		if _, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
 			[]string{"git", "config", "--global", "credential.https://github.com.helper", credentialHelper}); err != nil {
 			return fmt.Errorf("git credential helper: %w", err)
@@ -298,7 +297,7 @@ func injectAuthSecrets(ctx context.Context, cli *client.Client, containerID stri
 }
 
 // writeSecretFiles appends shell commands to script that write each provided
-// token to /run/secrets/ as a base64-decoded file with locked-down permissions.
+// token to the secrets tmpfs as a base64-decoded file with locked-down permissions.
 func writeSecretFiles(script *strings.Builder, ug string, opts RunPostStartOpts) {
 	type secret struct {
 		token string
@@ -314,8 +313,8 @@ func writeSecretFiles(script *strings.Builder, ug string, opts RunPostStartOpts)
 			continue
 		}
 		encoded := base64.StdEncoding.EncodeToString([]byte(s.token))
-		script.WriteString(fmt.Sprintf("echo '%s' | base64 -d > /run/secrets/%s\n", encoded, s.file))
-		script.WriteString(fmt.Sprintf("chmod 400 /run/secrets/%s && chown %s /run/secrets/%s\n", s.file, ug, s.file))
+		fmt.Fprintf(script, "echo '%s' | base64 -d > %s/%s\n", encoded, SecretsDir, s.file)
+		fmt.Fprintf(script, "chmod 400 %s/%s && chown %s %s/%s\n", SecretsDir, s.file, ug, SecretsDir, s.file)
 	}
 }
 
@@ -329,17 +328,17 @@ func createAuthWrapper(script *strings.Builder, ug string, opts RunPostStartOpts
 	}
 
 	wrapperPath := ContainerHome + "/.claude-auth-wrapper.sh"
-	script.WriteString(fmt.Sprintf("cat > %s << 'WRAPPER_EOF'\n", wrapperPath))
+	fmt.Fprintf(script, "cat > %s << 'WRAPPER_EOF'\n", wrapperPath)
 	script.WriteString("#!/bin/sh\n")
 	if opts.ApiKey != "" {
-		script.WriteString("export ANTHROPIC_API_KEY=\"$(cat /run/secrets/api_key)\"\n")
+		fmt.Fprintf(script, "export ANTHROPIC_API_KEY=\"$(cat %s/api_key)\"\n", SecretsDir)
 	}
 	if opts.OAuthToken != "" {
-		script.WriteString("export CLAUDE_CODE_OAUTH_TOKEN=\"$(cat /run/secrets/oauth_token)\"\n")
+		fmt.Fprintf(script, "export CLAUDE_CODE_OAUTH_TOKEN=\"$(cat %s/oauth_token)\"\n", SecretsDir)
 	}
 	script.WriteString("exec \"$@\"\n")
 	script.WriteString("WRAPPER_EOF\n")
-	script.WriteString(fmt.Sprintf("chmod 755 %s && chown %s %s\n", wrapperPath, ug, wrapperPath))
+	fmt.Fprintf(script, "chmod 755 %s && chown %s %s\n", wrapperPath, ug, wrapperPath)
 }
 
 // copyHostGitIdentity extracts user.name and user.email from the host's
@@ -411,8 +410,6 @@ func StopAndRemove(ctx context.Context, cli *client.Client, containerName string
 // HasOtherActiveSessions checks whether the container has any running exec
 // sessions other than myExecID. It uses Docker's ContainerInspect to enumerate
 // exec IDs and ContainerExecInspect to check each one's Running status.
-// This replaces the old process-name heuristic (ContainerTop + string matching)
-// with precise exec ID tracking.
 func HasOtherActiveSessions(ctx context.Context, cli *client.Client, containerID, myExecID string) bool {
 	inspect, err := cli.ContainerInspect(ctx, containerID)
 	if err != nil {

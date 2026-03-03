@@ -1,12 +1,11 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
-	"os"
-	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
 	dockerclient "github.com/docker/docker/client"
@@ -71,46 +70,51 @@ func pruneVolumes(ctx context.Context, cli *dockerclient.Client, force, all bool
 		projects[v.Project] = append(projects[v.Project], v)
 	}
 
-	info(fmt.Sprintf("Found %d volume(s) across %d project(s):", len(volumes), len(projectOrder)))
-	fmt.Println()
-	for i, project := range projectOrder {
-		vols := projects[project]
-		fmt.Printf("  [%d] %s\n", i+1, project)
-		for _, v := range vols {
-			fmt.Printf("      %s (%s)\n", v.Name, v.Kind)
-		}
-	}
-	fmt.Println()
+	info(fmt.Sprintf("Found %d volume(s) across %d project(s).", len(volumes), len(projectOrder)))
 
-	var toRemove []container.BunkerVolume
+	var selectedIndices []int
 
 	if all || len(projectOrder) == 1 {
-		toRemove = volumes
+		// Select all projects
+		for i := range projectOrder {
+			selectedIndices = append(selectedIndices, i)
+		}
+	} else if !isTTY() {
+		// Non-interactive: require --all or --force
+		warn("Non-interactive terminal detected. Use --all to select all, or --force to skip prompts.")
+		return
 	} else {
-		// Interactive selection
-		fmt.Print("[claude-bunker] Enter project numbers to remove (e.g. 1,3) or 'all': ")
-		reader := bufio.NewReader(os.Stdin)
-		answer, _ := reader.ReadString('\n')
-		answer = strings.TrimSpace(strings.ToLower(answer))
+		// Build huh options for projects
+		options := make([]huh.Option[int], len(projectOrder))
+		for i, project := range projectOrder {
+			vols := projects[project]
+			label := fmt.Sprintf("%s (%d volume(s))", project, len(vols))
+			options[i] = huh.NewOption(label, i)
+		}
 
-		if answer == "" {
-			info("Aborted.")
+		err := huh.NewForm(
+			huh.NewGroup(
+				huh.NewMultiSelect[int]().
+					Title("Select projects to remove volumes from").
+					Description("Space to toggle, Enter to confirm").
+					Options(options...).
+					Value(&selectedIndices),
+			),
+		).Run()
+
+		if err != nil {
+			if errors.Is(err, huh.ErrUserAborted) {
+				info("Aborted.")
+				return
+			}
+			warn("Selection failed: " + err.Error())
 			return
 		}
+	}
 
-		if answer == "all" {
-			toRemove = volumes
-		} else {
-			for _, part := range strings.Split(answer, ",") {
-				part = strings.TrimSpace(part)
-				var idx int
-				if _, err := fmt.Sscanf(part, "%d", &idx); err != nil || idx < 1 || idx > len(projectOrder) {
-					warn(fmt.Sprintf("Invalid selection: %s", part))
-					continue
-				}
-				toRemove = append(toRemove, projects[projectOrder[idx-1]]...)
-			}
-		}
+	var toRemove []container.BunkerVolume
+	for _, idx := range selectedIndices {
+		toRemove = append(toRemove, projects[projectOrder[idx]]...)
 	}
 
 	if len(toRemove) == 0 {
@@ -119,12 +123,7 @@ func pruneVolumes(ctx context.Context, cli *dockerclient.Client, force, all bool
 	}
 
 	if !force {
-		fmt.Printf("[claude-bunker] Remove %d volume(s)? [y/N] ", len(toRemove))
-		reader := bufio.NewReader(os.Stdin)
-		answer, _ := reader.ReadString('\n')
-		answer = strings.TrimSpace(strings.ToLower(answer))
-
-		if answer != "y" && answer != "yes" {
+		if !confirmAction(fmt.Sprintf("Remove %d volume(s)?", len(toRemove))) {
 			info("Aborted.")
 			return
 		}
@@ -140,7 +139,7 @@ func pruneVolumes(ctx context.Context, cli *dockerclient.Client, force, all bool
 		}
 	}
 
-	info(fmt.Sprintf("Pruned %d volume(s).", removed))
+	success(fmt.Sprintf("Pruned %d volume(s).", removed))
 }
 
 func pruneImages(ctx context.Context, cli *dockerclient.Client, force, all bool) {
@@ -155,42 +154,49 @@ func pruneImages(ctx context.Context, cli *dockerclient.Client, force, all bool)
 		return
 	}
 
-	info(fmt.Sprintf("Found %d claude-bunker image(s):", len(images)))
-	fmt.Println()
-	for i, img := range images {
-		sizeMB := float64(img.Size) / 1024 / 1024
-		fmt.Printf("  [%d] %s (%.0f MB)\n", i+1, img.Tag, sizeMB)
-	}
-	fmt.Println()
+	info(fmt.Sprintf("Found %d claude-bunker image(s).", len(images)))
 
-	var toRemove []container.BunkerImage
+	var selectedIndices []int
 
 	if all || len(images) == 1 {
-		toRemove = images
+		for i := range images {
+			selectedIndices = append(selectedIndices, i)
+		}
+	} else if !isTTY() {
+		warn("Non-interactive terminal detected. Use --all to select all, or --force to skip prompts.")
+		return
 	} else {
-		fmt.Print("[claude-bunker] Enter image numbers to remove (e.g. 1,3) or 'all': ")
-		reader := bufio.NewReader(os.Stdin)
-		answer, _ := reader.ReadString('\n')
-		answer = strings.TrimSpace(strings.ToLower(answer))
+		// Build huh options for images
+		options := make([]huh.Option[int], len(images))
+		for i, img := range images {
+			sizeMB := float64(img.Size) / 1024 / 1024
+			label := fmt.Sprintf("%s (%.0f MB)", img.Tag, sizeMB)
+			options[i] = huh.NewOption(label, i)
+		}
 
-		if answer == "" {
-			info("Aborted.")
+		err := huh.NewForm(
+			huh.NewGroup(
+				huh.NewMultiSelect[int]().
+					Title("Select images to remove").
+					Description("Space to toggle, Enter to confirm").
+					Options(options...).
+					Value(&selectedIndices),
+			),
+		).Run()
+
+		if err != nil {
+			if errors.Is(err, huh.ErrUserAborted) {
+				info("Aborted.")
+				return
+			}
+			warn("Selection failed: " + err.Error())
 			return
 		}
+	}
 
-		if answer == "all" {
-			toRemove = images
-		} else {
-			for _, part := range strings.Split(answer, ",") {
-				part = strings.TrimSpace(part)
-				var idx int
-				if _, err := fmt.Sscanf(part, "%d", &idx); err != nil || idx < 1 || idx > len(images) {
-					warn(fmt.Sprintf("Invalid selection: %s", part))
-					continue
-				}
-				toRemove = append(toRemove, images[idx-1])
-			}
-		}
+	var toRemove []container.BunkerImage
+	for _, idx := range selectedIndices {
+		toRemove = append(toRemove, images[idx])
 	}
 
 	if len(toRemove) == 0 {
@@ -199,12 +205,7 @@ func pruneImages(ctx context.Context, cli *dockerclient.Client, force, all bool)
 	}
 
 	if !force {
-		fmt.Printf("[claude-bunker] Remove %d image(s)? [y/N] ", len(toRemove))
-		reader := bufio.NewReader(os.Stdin)
-		answer, _ := reader.ReadString('\n')
-		answer = strings.TrimSpace(strings.ToLower(answer))
-
-		if answer != "y" && answer != "yes" {
+		if !confirmAction(fmt.Sprintf("Remove %d image(s)?", len(toRemove))) {
 			info("Aborted.")
 			return
 		}
@@ -220,5 +221,5 @@ func pruneImages(ctx context.Context, cli *dockerclient.Client, force, all bool)
 		}
 	}
 
-	info(fmt.Sprintf("Pruned %d image(s).", removed))
+	success(fmt.Sprintf("Pruned %d image(s).", removed))
 }

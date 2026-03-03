@@ -44,7 +44,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to find container: %w", err)
 	}
 	if id == "" {
-		fmt.Println("No sandbox container found for this workspace.")
+		info("No sandbox container found for this workspace.")
 		return nil
 	}
 

@@ -20,11 +20,6 @@ claude-bunker.exe
 claude-bunker.exe~
 dist/
 
-# Legacy / scratch
-bash-backup/
-ochestration.md
-test-settings.json
-
 # OS junk
 .DS_Store
 Thumbs.db

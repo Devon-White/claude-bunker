@@ -36,6 +36,10 @@ jobs:
             # Strip 'v' prefix from release tag
             TAG="${{ github.event.release.tag_name }}"
             TAG="${TAG#v}"
+            # Don't tag pre-releases as latest
+            if [ "${{ github.event.release.prerelease }}" = "true" ]; then
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            fi
           else
             TAG="${{ github.event.inputs.tag }}"
           fi
@@ -66,6 +70,6 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:v${{ steps.version.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ steps.version.outputs.prerelease != 'true' && format('{0}/{1}:latest', env.REGISTRY, env.IMAGE_NAME) || '' }}
           build-args: |
             TZ=UTC

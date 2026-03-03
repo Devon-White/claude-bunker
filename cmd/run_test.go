@@ -89,13 +89,6 @@ func TestExtractBunkerFlags(t *testing.T) {
 			},
 		},
 		{
-			name: "no-teardown is unknown flag (removed)",
-			args: []string{"--no-teardown"},
-			want: bunkerFlags{
-				remaining: []string{"--no-teardown"},
-			},
-		},
-		{
 			name: "mixed bunker and claude flags",
 			args: []string{"--gh-token", "ghp_abc", "--model", "opus", "--verbose", "--print", "hello world"},
 			want: bunkerFlags{

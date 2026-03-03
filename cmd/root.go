@@ -68,7 +68,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the version",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("claude-bunker", Version)
+		fmt.Println(renderVersion(Version))
 	},
 }
 
@@ -81,7 +81,7 @@ func Execute() error {
 			rootCmd.DisableFlagParsing = false
 			rootCmd.SetArgs([]string{"--help"})
 		case "version", "--version", "-v":
-			fmt.Println("claude-bunker", Version)
+			fmt.Println(renderVersion(Version))
 			os.Exit(0)
 		case "--dump-dockerfile":
 			if err := dumpDockerfile(); err != nil {

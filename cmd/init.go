@@ -1,13 +1,18 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"sync"
 
+	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
 	"github.com/Devon-White/claude-bunker/internal/config"
+	"github.com/Devon-White/claude-bunker/internal/container"
 )
 
 var initCmd = &cobra.Command{
@@ -32,8 +37,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	// Check if config already exists
 	if _, err := os.Stat(cfgPath); err == nil {
-		fmt.Printf("Config already exists: %s\n", cfgPath)
-		fmt.Println("Edit it directly to make changes.")
+		info("Config already exists: " + cfgPath)
+		fmt.Println(dimStyle.Render("  Edit it directly to make changes."))
 		return nil
 	}
 
@@ -43,38 +48,176 @@ func runInit(cmd *cobra.Command, args []string) error {
 		die("Failed to create config directory: " + err.Error())
 	}
 
-	// Create minimal empty config
-	data := []byte("{}\n")
+	// Non-interactive fallback: write empty config if stdin is not a terminal
+	if !isTTY() {
+		return writeConfig(cfgPath, nil)
+	}
 
-	if err := os.WriteFile(cfgPath, data, 0o644); err != nil {
+	// Interactive wizard
+	selected, err := selectLanguages()
+	if err != nil {
+		// User aborted (Ctrl+C) → write empty config
+		return writeConfig(cfgPath, nil)
+	}
+
+	if len(selected) == 0 {
+		return writeConfig(cfgPath, nil)
+	}
+
+	// Pre-fetch all tags and versions concurrently
+	type prefetchResult struct {
+		tag      string
+		versions []string
+	}
+	results := make([]prefetchResult, len(selected))
+	var wg sync.WaitGroup
+	for i, idx := range selected {
+		wg.Add(1)
+		go func(i, idx int) {
+			defer wg.Done()
+			p := container.Presets[idx]
+			results[i].tag = container.LatestFeatureTag(p.FeatureRepo)
+			if live, err := container.FetchSupportedVersions(p); err == nil {
+				results[i].versions = live
+			}
+		}(i, idx)
+	}
+	wg.Wait()
+
+	// Interactive version selection (sequential — needs user input)
+	selections := make([]initSelection, 0, len(selected))
+
+	for i, idx := range selected {
+		preset := container.Presets[idx]
+		tag := results[i].tag
+		versions := results[i].versions
+
+		// Pick language version
+		version, err := selectVersion(preset, tag, versions)
+		if err != nil {
+			// User aborted → write empty config
+			return writeConfig(cfgPath, nil)
+		}
+
+		selections = append(selections, initSelection{
+			preset:  preset,
+			tag:     tag,
+			version: version,
+		})
+	}
+
+	// Build config map
+	cfg := buildConfig(selections)
+
+	return writeConfig(cfgPath, cfg)
+}
+
+// selectLanguages shows a multi-select picker for languages/runtimes.
+func selectLanguages() ([]int, error) {
+	options := make([]huh.Option[int], len(container.Presets))
+	for i, p := range container.Presets {
+		options[i] = huh.NewOption(p.Label, i)
+	}
+
+	var selected []int
+	err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[int]().
+				Title("Select languages / runtimes").
+				Description("Space to toggle, Enter to confirm").
+				Options(options...).
+				Value(&selected),
+		),
+	).Run()
+
+	if err != nil {
+		return nil, err
+	}
+	return selected, nil
+}
+
+// selectVersion shows a select picker for a language version.
+// If prefetched is non-empty it is used directly; otherwise falls back to
+// the preset's hardcoded CommonVersions.
+func selectVersion(preset container.LanguagePreset, tag string, prefetched []string) (string, error) {
+	versions := prefetched
+	if len(versions) == 0 {
+		versions = preset.CommonVersions
+	}
+
+	options := make([]huh.Option[string], len(versions))
+	for i, v := range versions {
+		options[i] = huh.NewOption(v, v)
+	}
+
+	var version string
+	err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(fmt.Sprintf("%s version (%s:%s)", preset.Label, preset.FeatureRepo, tag)).
+				Options(options...).
+				Value(&version),
+		),
+	).Run()
+
+	if err != nil {
+		return "", err
+	}
+	return version, nil
+}
+
+type initSelection struct {
+	preset  container.LanguagePreset
+	tag     string
+	version string
+}
+
+// buildConfig constructs a config map from selected languages/versions.
+func buildConfig(selections []initSelection) map[string]interface{} {
+	if len(selections) == 0 {
+		return nil
+	}
+
+	features := make(map[string]interface{})
+	var domains []string
+
+	for _, s := range selections {
+		ref := fmt.Sprintf("%s:%s", s.preset.FeatureRepo, s.tag)
+		features[ref] = map[string]interface{}{
+			s.preset.VersionOption: s.version,
+		}
+		domains = append(domains, s.preset.Domains...)
+	}
+
+	sort.Strings(domains)
+
+	cfg := map[string]interface{}{
+		"features": features,
+	}
+	if len(domains) > 0 {
+		cfg["allowDomains"] = domains
+	}
+	return cfg
+}
+
+// writeConfig writes config to disk. If cfg is nil, writes "{}".
+func writeConfig(path string, cfg map[string]interface{}) error {
+	var data []byte
+	if cfg == nil || len(cfg) == 0 {
+		data = []byte("{}\n")
+	} else {
+		var err error
+		data, err = json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			die("Failed to marshal config: " + err.Error())
+		}
+		data = append(data, '\n')
+	}
+
+	if err := os.WriteFile(path, data, 0o644); err != nil {
 		die("Failed to write config: " + err.Error())
 	}
 
-	info("Created " + cfgPath)
-	fmt.Println()
-	fmt.Println("Edit the config to customize your sandbox. Example:")
-	fmt.Println()
-	fmt.Println(`  {`)
-	fmt.Println(`    "allowDomains": ["pypi.org", "files.pythonhosted.org"],`)
-	fmt.Println(`    "apt": ["python3", "python3-pip"],`)
-	fmt.Println(`    "features": {`)
-	fmt.Println(`      "ghcr.io/devcontainers/features/node:1": {"version": "20"}`)
-	fmt.Println(`    },`)
-	fmt.Println(`    "env": {"NODE_ENV": "development"},`)
-	fmt.Println(`    "postStartCommand": "npm install"`)
-	fmt.Println(`  }`)
-	fmt.Println()
-	fmt.Println("Fields:")
-	fmt.Println("  allowDomains     Additional domains the sandbox can access")
-	fmt.Println("  apt              APT packages to install in the image")
-	fmt.Println("  features         OCI devcontainer features (languages, runtimes)")
-	fmt.Println("  env              Environment variables baked into the image")
-	fmt.Println("  postStartCommand Shell command to run after container starts")
-	fmt.Println("  exclude          Paths to hide via tmpfs overlays")
-	fmt.Println("  workspace        Container working directory (monorepo subpath)")
-	fmt.Println("  ghToken          GitHub PAT for git push from container")
-	fmt.Println("  seedHistory      Seed host session history (default: true)")
-	fmt.Println()
-	fmt.Println("Docs: https://github.com/Devon-White/claude-bunker#project-config")
+	success("Created " + path)
 	return nil
 }

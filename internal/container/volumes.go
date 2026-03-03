@@ -8,33 +8,15 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
-)
 
-// volumePrefixes are the prefixes used by claude-bunker for its Docker volumes.
-var volumePrefixes = []string{
-	"claude-code-bashhistory-claude-bunker-",
-	"claude-code-config-claude-bunker-",
-}
+	"github.com/Devon-White/claude-bunker/internal/config"
+)
 
 // BunkerVolume holds information about a claude-bunker Docker volume.
 type BunkerVolume struct {
 	Name    string
 	Kind    string // "bashhistory" or "config"
 	Project string // project name portion from the container name
-}
-
-// ListBunkerVolumes returns all Docker volumes created by claude-bunker.
-// Uses exact prefix matching to avoid cross-matching.
-func ListBunkerVolumes(ctx context.Context, cli *client.Client) ([]string, error) {
-	vols, err := ListBunkerVolumesDetailed(ctx, cli)
-	if err != nil {
-		return nil, err
-	}
-	names := make([]string, len(vols))
-	for i, v := range vols {
-		names[i] = v.Name
-	}
-	return names, nil
 }
 
 // ListBunkerVolumesDetailed returns detailed information about all claude-bunker volumes.
@@ -44,12 +26,17 @@ func ListBunkerVolumesDetailed(ctx context.Context, cli *client.Client) ([]Bunke
 		return nil, err
 	}
 
+	volumePrefixes := []string{
+		config.BashHistoryVolumePrefix,
+		config.ClaudeConfigVolumePrefix,
+	}
+
 	var vols []BunkerVolume
 	for _, v := range resp.Volumes {
 		for _, prefix := range volumePrefixes {
 			if strings.HasPrefix(v.Name, prefix) {
 				kind := "config"
-				if strings.Contains(prefix, "bashhistory") {
+				if prefix == config.BashHistoryVolumePrefix {
 					kind = "bashhistory"
 				}
 				project := v.Name[len(prefix):]
@@ -79,8 +66,11 @@ type BunkerImage struct {
 
 // ListBunkerImages returns all Docker images with the claude-bunker: prefix.
 func ListBunkerImages(ctx context.Context, cli *client.Client) ([]BunkerImage, error) {
+	imageRef := config.ImagePrefix + ":*"
+	imagePrefix := config.ImagePrefix + ":"
+
 	f := filters.NewArgs()
-	f.Add("reference", "claude-bunker:*")
+	f.Add("reference", imageRef)
 	imgs, err := cli.ImageList(ctx, image.ListOptions{Filters: f})
 	if err != nil {
 		return nil, err
@@ -89,7 +79,7 @@ func ListBunkerImages(ctx context.Context, cli *client.Client) ([]BunkerImage, e
 	var result []BunkerImage
 	for _, img := range imgs {
 		for _, tag := range img.RepoTags {
-			if strings.HasPrefix(tag, "claude-bunker:") {
+			if strings.HasPrefix(tag, imagePrefix) {
 				shortID := img.ID
 				if strings.HasPrefix(shortID, "sha256:") && len(shortID) > 19 {
 					shortID = shortID[7:19]

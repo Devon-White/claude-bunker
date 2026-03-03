@@ -9,47 +9,59 @@ import (
 	"strings"
 )
 
+// BuildInput bundles the four values that flow through every fingerprint function.
+type BuildInput struct {
+	Version    string
+	Dockerfile string
+	Scripts    map[string][]byte
+	ProjectCfg ProjectConfig
+}
+
 // ImageFingerprint computes a SHA-256 hash of all inputs that affect the Docker
-// image build: the generated Dockerfile, embedded scripts, apt packages,
-// features config, and user env vars baked into the image.
-func ImageFingerprint(dockerfile string, scripts map[string][]byte, projectCfg ProjectConfig) string {
+// image build: the claude-bunker version, the generated Dockerfile, embedded
+// scripts, apt packages, features config, and user env vars baked into the image.
+func ImageFingerprint(b BuildInput) string {
 	h := sha256.New()
+
+	// Hash the claude-bunker version so upgrades invalidate the cache
+	h.Write([]byte("version:"))
+	h.Write([]byte(b.Version))
 
 	// Hash the generated Dockerfile
 	h.Write([]byte("dockerfile:"))
-	h.Write([]byte(dockerfile))
+	h.Write([]byte(b.Dockerfile))
 
 	// Hash embedded scripts in deterministic order
-	scriptNames := make([]string, 0, len(scripts))
-	for name := range scripts {
+	scriptNames := make([]string, 0, len(b.Scripts))
+	for name := range b.Scripts {
 		scriptNames = append(scriptNames, name)
 	}
 	sort.Strings(scriptNames)
 	for _, name := range scriptNames {
 		h.Write([]byte("script:" + name + ":"))
-		h.Write(scripts[name])
+		h.Write(b.Scripts[name])
 	}
 
 	// Hash apt packages (sorted, since they affect the image)
-	if len(projectCfg.Apt) > 0 {
-		sorted := make([]string, len(projectCfg.Apt))
-		copy(sorted, projectCfg.Apt)
+	if len(b.ProjectCfg.Apt) > 0 {
+		sorted := make([]string, len(b.ProjectCfg.Apt))
+		copy(sorted, b.ProjectCfg.Apt)
 		sort.Strings(sorted)
 		h.Write([]byte("apt:"))
 		h.Write([]byte(strings.Join(sorted, ",")))
 	}
 
 	// Hash features config (affects image layers)
-	if len(projectCfg.Features) > 0 {
+	if len(b.ProjectCfg.Features) > 0 {
 		h.Write([]byte("features:"))
-		featureNames := make([]string, 0, len(projectCfg.Features))
-		for name := range projectCfg.Features {
+		featureNames := make([]string, 0, len(b.ProjectCfg.Features))
+		for name := range b.ProjectCfg.Features {
 			featureNames = append(featureNames, name)
 		}
 		sort.Strings(featureNames)
 		for _, name := range featureNames {
 			h.Write([]byte(name + ":"))
-			opts := projectCfg.Features[name]
+			opts := b.ProjectCfg.Features[name]
 			optKeys := make([]string, 0, len(opts))
 			for k := range opts {
 				optKeys = append(optKeys, k)
@@ -62,15 +74,15 @@ func ImageFingerprint(dockerfile string, scripts map[string][]byte, projectCfg P
 	}
 
 	// Hash user env vars that are baked into the image via GenerateDockerfile
-	if len(projectCfg.Env) > 0 {
+	if len(b.ProjectCfg.Env) > 0 {
 		h.Write([]byte("env:"))
-		envKeys := make([]string, 0, len(projectCfg.Env))
-		for k := range projectCfg.Env {
+		envKeys := make([]string, 0, len(b.ProjectCfg.Env))
+		for k := range b.ProjectCfg.Env {
 			envKeys = append(envKeys, k)
 		}
 		sort.Strings(envKeys)
 		for _, k := range envKeys {
-			h.Write([]byte(k + "=" + projectCfg.Env[k] + ","))
+			h.Write([]byte(k + "=" + b.ProjectCfg.Env[k] + ","))
 		}
 	}
 
@@ -120,9 +132,9 @@ func ContainerFingerprint(projectCfg ProjectConfig) string {
 // CombinedFingerprint produces a single fingerprint string that encodes both
 // image and container components, separated by ":". This is stored in the
 // cache file for comparison.
-func CombinedFingerprint(dockerfile string, scripts map[string][]byte, projectCfg ProjectConfig) string {
-	imgFP := ImageFingerprint(dockerfile, scripts, projectCfg)
-	ctrFP := ContainerFingerprint(projectCfg)
+func CombinedFingerprint(b BuildInput) string {
+	imgFP := ImageFingerprint(b)
+	ctrFP := ContainerFingerprint(b.ProjectCfg)
 	return imgFP + ":" + ctrFP
 }
 
@@ -135,9 +147,9 @@ type FingerprintResult struct {
 // CompareFingerprints computes current fingerprints and compares them against
 // the cached fingerprint for the given container name. Returns which components
 // match.
-func CompareFingerprints(dockerfile string, scripts map[string][]byte, projectCfg ProjectConfig, containerName string) FingerprintResult {
-	currentImg := ImageFingerprint(dockerfile, scripts, projectCfg)
-	currentCtr := ContainerFingerprint(projectCfg)
+func CompareFingerprints(b BuildInput, containerName string) FingerprintResult {
+	currentImg := ImageFingerprint(b)
+	currentCtr := ContainerFingerprint(b.ProjectCfg)
 
 	cached, err := LoadFingerprint(containerName)
 	if err != nil {
@@ -146,7 +158,6 @@ func CompareFingerprints(dockerfile string, scripts map[string][]byte, projectCf
 
 	parts := strings.SplitN(cached, ":", 2)
 	if len(parts) != 2 {
-		// Legacy single-component fingerprint — force full rebuild
 		return FingerprintResult{ImageMatch: false, ContainerMatch: false}
 	}
 
@@ -157,8 +168,8 @@ func CompareFingerprints(dockerfile string, scripts map[string][]byte, projectCf
 }
 
 // SaveCombinedFingerprint computes and saves the combined fingerprint.
-func SaveCombinedFingerprint(dockerfile string, scripts map[string][]byte, projectCfg ProjectConfig, containerName string) error {
-	fp := CombinedFingerprint(dockerfile, scripts, projectCfg)
+func SaveCombinedFingerprint(b BuildInput, containerName string) error {
+	fp := CombinedFingerprint(b)
 	return SaveFingerprint(containerName, fp)
 }
 
@@ -203,7 +214,7 @@ func SaveFingerprint(containerName, fingerprint string) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(p, []byte(fingerprint), 0644)
+	return os.WriteFile(p, []byte(fingerprint), 0600)
 }
 
 // ClearFingerprint deletes the cached fingerprint for a container.
@@ -232,7 +243,9 @@ func EffectiveWorkdir(cfg ProjectConfig) (string, error) {
 	return "/workspace", nil
 }
 
-// ExtraDomains returns a comma-separated string of extra allowed domains.
-func ExtraDomains(cfg ProjectConfig) string {
-	return strings.Join(cfg.AllowDomains, ",")
+// ExtraDomains returns a copy of the project's extra allowed domains.
+func ExtraDomains(cfg ProjectConfig) []string {
+	out := make([]string, len(cfg.AllowDomains))
+	copy(out, cfg.AllowDomains)
+	return out
 }

@@ -82,7 +82,10 @@ func ExecInteractive(ctx context.Context, cli *client.Client, containerID, user 
 
 	// Wait for output to complete (command exited)
 	select {
-	case <-outputDone:
+	case err := <-outputDone:
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: output stream error: %v\n", err)
+		}
 	case <-ctx.Done():
 		return -1, "", ctx.Err()
 	}
