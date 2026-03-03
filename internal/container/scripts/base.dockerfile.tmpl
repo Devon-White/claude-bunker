@@ -1,0 +1,56 @@
+FROM debian:bookworm-slim
+
+# Create {{.User}} user
+RUN groupadd --gid 1000 {{.User}} && \
+  useradd --uid 1000 --gid 1000 -m -s /bin/bash {{.User}}
+
+# Install development tools, iptables for firewall, and utilities
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  bubblewrap \
+  ca-certificates \
+  curl \
+  dnsutils \
+  gh \
+  git \
+  ipset \
+  iptables \
+  iproute2 \
+  less \
+  tmux \
+  && apt-get clean && rm -rf /var/lib/apt/lists/* \
+  && update-alternatives --set iptables /usr/sbin/iptables-legacy
+
+# Timezone — placed after apt-get so TZ changes don't bust the package cache
+ARG TZ=UTC
+ENV TZ="$TZ"
+
+# Persist bash history, create dirs
+RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE={{.HistoryDir}}/.bash_history" \
+  && mkdir {{.HistoryDir}} \
+  && touch {{.HistoryDir}}/.bash_history \
+  && chown -R {{.User}} {{.HistoryDir}} \
+  && echo "$SNIPPET" >> "{{.Home}}/.bashrc" \
+  && mkdir -p {{.Workspace}} {{.Home}}/.claude \
+  && chown -R {{.User}}:{{.User}} {{.Workspace}} {{.Home}}/.claude \
+  && mkdir -p {{.ManagedSettingsDir}}
+
+WORKDIR {{.Workspace}}
+
+# Switch to non-root user for Claude Code install
+USER {{.User}}
+
+ENV DEVCONTAINER=true
+ENV SHELL=/bin/bash
+
+# Install Claude Code via native installer
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH="{{.Home}}/.local/bin:$PATH"
+
+# COPY layers placed after expensive installs to avoid cache busting
+USER root
+COPY firewall-common.sh {{.CommonFirewallPath}}
+COPY init-firewall.sh {{.FirewallPath}}
+COPY refresh-firewall.sh {{.RefreshFirewallPath}}
+COPY tmux.conf {{.Home}}/.tmux.conf
+RUN chmod +x {{.CommonFirewallPath}} {{.FirewallPath}} {{.RefreshFirewallPath}} && \
+  chown {{.User}}:{{.User}} {{.Home}}/.tmux.conf

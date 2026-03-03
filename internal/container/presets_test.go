@@ -106,7 +106,7 @@ func TestEOLValue_UnmarshalJSON(t *testing.T) {
 func TestEOLValue_IsExpired_Today(t *testing.T) {
 	// A date equal to today should not yet be considered expired
 	// (we use After, not AfterOrEqual).
-	today := time.Now().Format("2006-01-02")
+	today := time.Now().UTC().Format("2006-01-02")
 	input := `"` + today + `"`
 
 	var v EOLValue
