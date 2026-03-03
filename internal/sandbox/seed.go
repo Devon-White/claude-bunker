@@ -35,7 +35,7 @@ func SeedSettings(ctx context.Context, cli *client.Client, containerID, workspac
 	// Ensure the tmpfs at <workspace>/.claude exists and is owned by the
 	// container user (Docker mounts tmpfs as root by default).
 	// mkdir first so chown doesn't fail if the directory is missing.
-	if _, err := container.ExecNonInteractive(ctx, cli, containerID, "root",
+	if _, err := container.ExecNonInteractive(ctx, cli, containerID, container.RootUser,
 		[]string{"sh", "-c", "mkdir -p " + claudeDir + " && chown " + container.ContainerUserGroup + " " + claudeDir}); err != nil {
 		fmt.Fprintf(logW, "[claude-bunker] WARNING: setup %s: %v\n", claudeDir, err)
 	}
@@ -53,7 +53,7 @@ func SeedSettings(ctx context.Context, cli *client.Client, containerID, workspac
 
 	// Fix ownership — CopyToContainer creates files as root, but Claude Code
 	// runs as the container user.
-	if _, err := container.ExecNonInteractive(ctx, cli, containerID, "root",
+	if _, err := container.ExecNonInteractive(ctx, cli, containerID, container.RootUser,
 		[]string{"chown", "-R", container.ContainerUserGroup, claudeDir}); err != nil {
 		fmt.Fprintf(logW, "[claude-bunker] WARNING: chown -R %s: %v\n", claudeDir, err)
 	}
@@ -97,7 +97,7 @@ func writeManagedSettings(ctx context.Context, cli *client.Client, containerID s
 	}
 
 	// Make it read-only and owned by root to prevent tampering
-	_, err = container.ExecNonInteractive(ctx, cli, containerID, "root",
+	_, err = container.ExecNonInteractive(ctx, cli, containerID, container.RootUser,
 		[]string{"chmod", "444", managedSettingsPath})
 	if err != nil {
 		return fmt.Errorf("chmod managed-settings.json: %w", err)
@@ -144,7 +144,7 @@ func SeedSessionHistory(ctx context.Context, cli *client.Client, containerID, wo
 	}
 
 	// Fix ownership — CopyToContainer creates files as root, but Claude runs as claude-bunker
-	if _, err := container.ExecNonInteractive(ctx, cli, containerID, "root",
+	if _, err := container.ExecNonInteractive(ctx, cli, containerID, container.RootUser,
 		[]string{"chown", "-R", container.ContainerUserGroup, containerSessionDir}); err != nil {
 		fmt.Fprintf(logW, "[claude-bunker] WARNING: chown -R %s: %v\n", containerSessionDir, err)
 	}

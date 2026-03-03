@@ -13,7 +13,6 @@ import (
 
 var (
 	colorBrand   = lipgloss.AdaptiveColor{Light: "#2563EB", Dark: "#60A5FA"} // muted blue
-	colorInfo    = lipgloss.AdaptiveColor{Light: "#2563EB", Dark: "#60A5FA"}
 	colorSuccess = lipgloss.AdaptiveColor{Light: "#16A34A", Dark: "#4ADE80"}
 	colorWarn    = lipgloss.AdaptiveColor{Light: "#CA8A04", Dark: "#FACC15"}
 	colorError   = lipgloss.AdaptiveColor{Light: "#DC2626", Dark: "#F87171"}

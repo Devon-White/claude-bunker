@@ -8,6 +8,9 @@ if [ "${_FW_TIMEOUT_SET:-}" != "1" ]; then
     exec timeout 60 "$0" "$@"
 fi
 
+# Source shared DNS resolution and ipset helpers.
+. "$(dirname "$0")/firewall-common.sh"
+
 # Flush filter and mangle rules. Leave the nat table intact so Docker's
 # embedded DNS routing (127.0.0.11 NAT interception) keeps working without
 # the fragile save/grep/restore dance the upstream script requires.
@@ -37,6 +40,10 @@ if [ -z "$HOST_IP" ]; then
     echo "ERROR: Failed to detect host IP"
     exit 1
 fi
+if ! is_ipv4 "$HOST_IP"; then
+    echo "ERROR: HOST_IP '$HOST_IP' does not look like an IPv4 address"
+    exit 1
+fi
 HOST_NETWORK=$(echo "$HOST_IP" | sed "s/\.[0-9]*$/.0\/24/")
 echo "Host network detected as: $HOST_NETWORK"
 
@@ -48,11 +55,17 @@ iptables -A OUTPUT -d "$HOST_NETWORK" -j ACCEPT
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-# Temporarily allow outbound HTTPS for bootstrap (dig needs it for some setups)
-# This rule will be REMOVED after the allowlist is populated.
-iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT
+# ---------------------------------------------------------------------------
+# ipset: create the allowed-IP set. A single iptables rule references it.
+# Populated via DNS resolution below; atomically refreshed by the companion
+# refresh-firewall.sh daemon to handle CDN/cloud IP rotation.
+# ---------------------------------------------------------------------------
+IPSET_LIVE="$IPSET_NAME"
+ipset create "$IPSET_LIVE" hash:ip 2>/dev/null || ipset flush "$IPSET_LIVE"
+iptables -A OUTPUT -m set --match-set "$IPSET_LIVE" dst -j ACCEPT
 
-# NOW set default policies to DROP
+# NOW set default policies to DROP (ipset rule is in place but empty — no
+# HTTPS traffic flows until the set is populated by DNS resolution below).
 iptables -P INPUT DROP
 iptables -P FORWARD DROP
 iptables -P OUTPUT DROP
@@ -83,24 +96,17 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# resolve_and_allow: Resolves a domain to IPs and adds iptables rules.
+# resolve_and_allow: Resolves a domain to IPs and adds them to the ipset.
 # Retries once on failure. Non-critical domains warn and continue;
 # critical domains (api.anthropic.com) cause a fatal exit.
 # ---------------------------------------------------------------------------
 resolve_and_allow() {
     local domain="$1"
     local critical="${2:-0}"
-    local attempt ips
+    local attempt
 
     for attempt in 1 2; do
-        ips=$(dig +noall +answer +tries=2 +time=3 A "$domain" 2>/dev/null | awk '$4 == "A" {print $5}' || true)
-        if [ -n "$ips" ]; then
-            while read -r ip; do
-                if [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-                    echo "Allowing $ip for $domain"
-                    iptables -A OUTPUT -d "$ip" -j ACCEPT
-                fi
-            done <<< "$ips"
+        if add_ips_to_set "$domain" "$IPSET_LIVE" 1; then
             return 0
         fi
         [ "$attempt" -lt 2 ] && sleep 1
@@ -115,7 +121,7 @@ resolve_and_allow() {
 }
 
 # ---------------------------------------------------------------------------
-# Populate the allowlist by resolving each domain sequentially.
+# Populate the ipset by resolving each domain sequentially.
 # The domain list path is passed as $1 by the Go binary (one domain per
 # line, builtin + user extras). This keeps Go as the single source of truth.
 # ---------------------------------------------------------------------------
@@ -144,9 +150,6 @@ while IFS= read -r domain || [ -n "$domain" ]; do
     fi
 done < "$DOMAINS_FILE"
 echo "Resolved $DOMAIN_COUNT domains"
-
-# Remove the temporary bootstrap HTTPS rule — no longer needed
-iptables -D OUTPUT -p tcp --dport 443 -j ACCEPT
 
 # Explicitly REJECT all other outbound traffic for immediate feedback
 iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited

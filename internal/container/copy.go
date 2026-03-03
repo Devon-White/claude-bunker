@@ -124,7 +124,9 @@ func execWithStdin(ctx context.Context, cli *client.Client, containerID, user st
 	}
 
 	var stdout, stderr bytes.Buffer
-	_, _ = stdcopy.StdCopy(&stdout, &stderr, attachResp.Reader)
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, attachResp.Reader); err != nil {
+		return fmt.Errorf("reading exec output: %w", err)
+	}
 
 	inspect, err := cli.ContainerExecInspect(ctx, execResp.ID)
 	if err != nil {
@@ -169,7 +171,7 @@ func CopyDirToContainerExec(ctx context.Context, cli *client.Client, containerID
 	}
 
 	containerDir = strings.ReplaceAll(containerDir, "\\", "/")
-	return execWithStdin(ctx, cli, containerID, "root",
+	return execWithStdin(ctx, cli, containerID, RootUser,
 		[]string{"tar", "xf", "-", "-C", containerDir}, buf.Bytes())
 }
 
@@ -184,11 +186,11 @@ func CopyContentToContainer(ctx context.Context, cli *client.Client, containerID
 	containerPath = strings.ReplaceAll(containerPath, "\\", "/")
 
 	if len(content) <= maxArgSize {
-		_, err := ExecNonInteractive(ctx, cli, containerID, "root",
+		_, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
 			[]string{"sh", "-c", "echo \"$1\" | base64 -d > \"$2\"", "_", encoded, containerPath})
 		return err
 	}
 
-	return execWithStdin(ctx, cli, containerID, "root",
+	return execWithStdin(ctx, cli, containerID, RootUser,
 		[]string{"sh", "-c", "base64 -d > \"$1\"", "_", containerPath}, []byte(encoded))
 }

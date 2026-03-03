@@ -198,7 +198,6 @@ func runInSandbox(passedArgs []string, execCmd string) error {
 	if err != nil {
 		die(err.Error())
 	}
-	defer cli.Close()
 
 	r := &runner{
 		ctx:       ctx,
@@ -243,6 +242,7 @@ func runInSandbox(passedArgs []string, execCmd string) error {
 
 	exitCode := r.exec(execCmd, flags.remaining)
 	r.cleanup()
+	cli.Close()
 	os.Exit(exitCode)
 	return nil
 }
@@ -280,13 +280,15 @@ func (r *runner) resolveNaming() {
 // resolveContainer checks fingerprints and existing container state to decide
 // whether to reuse, recreate, or rebuild.
 func (r *runner) resolveContainer() {
+	scripts := container.BuildContextScripts()
+	scriptMap := make(map[string][]byte, len(scripts))
+	for _, f := range scripts {
+		scriptMap[f.Name] = f.Content
+	}
 	r.buildInput = config.BuildInput{
 		Version:    Version,
 		Dockerfile: container.GenerateBaseDockerfile(),
-		Scripts: map[string][]byte{
-			"init-firewall.sh": container.InitFirewallScript(),
-			"tmux.conf":        container.TmuxConf(),
-		},
+		Scripts:    scriptMap,
 		ProjectCfg: r.projectCfg,
 	}
 
@@ -412,8 +414,7 @@ func (r *runner) setupSignals() {
 func (r *runner) exec(execCmd string, passedArgs []string) int {
 	var execCommand []string
 	if execCmd == "claude" && (r.apiKey != "" || r.oauthToken != "") {
-		wrapperPath := container.ContainerHome + "/.claude-auth-wrapper.sh"
-		execCommand = append([]string{wrapperPath, execCmd}, passedArgs...)
+		execCommand = append([]string{container.AuthWrapperPath, execCmd}, passedArgs...)
 	} else {
 		execCommand = append([]string{execCmd}, passedArgs...)
 	}

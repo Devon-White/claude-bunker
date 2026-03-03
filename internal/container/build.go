@@ -192,11 +192,10 @@ func buildContextTar(dockerfile string, features []ResolvedFeature) (*bytes.Buff
 	if err := addTarEntry(tw, "Dockerfile", []byte(dockerfile), 0644, modTime); err != nil {
 		return nil, fmt.Errorf("adding Dockerfile: %w", err)
 	}
-	if err := addTarEntry(tw, "init-firewall.sh", InitFirewallScript(), 0755, modTime); err != nil {
-		return nil, fmt.Errorf("adding init-firewall.sh: %w", err)
-	}
-	if err := addTarEntry(tw, "tmux.conf", TmuxConf(), 0644, modTime); err != nil {
-		return nil, fmt.Errorf("adding tmux.conf: %w", err)
+	for _, f := range BuildContextScripts() {
+		if err := addTarEntry(tw, f.Name, f.Content, int64(f.Mode), modTime); err != nil {
+			return nil, fmt.Errorf("adding %s: %w", f.Name, err)
+		}
 	}
 	// Add feature directories under _features/<id>/
 	for _, f := range features {

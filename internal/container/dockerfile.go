@@ -51,6 +51,7 @@ func generateBaseContent() string {
 	b.WriteString("  dnsutils \\\n")
 	b.WriteString("  gh \\\n")
 	b.WriteString("  git \\\n")
+	b.WriteString("  ipset \\\n")
 	b.WriteString("  iptables \\\n")
 	b.WriteString("  iproute2 \\\n")
 	b.WriteString("  less \\\n")
@@ -93,9 +94,11 @@ func generateBaseContent() string {
 	// --- COPY layers AFTER expensive installs (prevents cache busting) ---
 	b.WriteString("# COPY layers placed after expensive installs to avoid cache busting\n")
 	b.WriteString("USER root\n")
+	fmt.Fprintf(&b, "COPY firewall-common.sh %s\n", CommonFirewallScriptPath)
 	fmt.Fprintf(&b, "COPY init-firewall.sh %s\n", FirewallScriptPath)
+	fmt.Fprintf(&b, "COPY refresh-firewall.sh %s\n", RefreshFirewallScriptPath)
 	fmt.Fprintf(&b, "COPY tmux.conf %s/.tmux.conf\n", h)
-	fmt.Fprintf(&b, "RUN chmod +x %s && \\\n", FirewallScriptPath)
+	fmt.Fprintf(&b, "RUN chmod +x %s %s %s && \\\n", CommonFirewallScriptPath, FirewallScriptPath, RefreshFirewallScriptPath)
 	fmt.Fprintf(&b, "  chown %s:%s %s/.tmux.conf\n\n", u, u, h)
 
 	return b.String()

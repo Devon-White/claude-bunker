@@ -28,10 +28,7 @@ If a config already exists, it will not be overwritten.`,
 func runInit(cmd *cobra.Command, args []string) error {
 	initVerbosity(cmd)
 
-	workspace, err := os.Getwd()
-	if err != nil {
-		die("cannot determine workspace: " + err.Error())
-	}
+	workspace := resolveWorkspace()
 
 	cfgPath := config.ConfigPath(workspace)
 
@@ -209,13 +206,13 @@ func writeConfig(path string, cfg map[string]interface{}) error {
 		var err error
 		data, err = json.MarshalIndent(cfg, "", "  ")
 		if err != nil {
-			die("Failed to marshal config: " + err.Error())
+			return fmt.Errorf("marshaling config: %w", err)
 		}
 		data = append(data, '\n')
 	}
 
 	if err := os.WriteFile(path, data, 0o644); err != nil {
-		die("Failed to write config: " + err.Error())
+		return fmt.Errorf("writing config: %w", err)
 	}
 
 	success("Created " + path)

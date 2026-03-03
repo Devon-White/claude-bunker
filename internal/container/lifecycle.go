@@ -19,6 +19,13 @@ import (
 	"github.com/Devon-White/claude-bunker/internal/config"
 )
 
+// mandatoryEnvKeys lists environment variables that are always set by
+// claude-bunker and must not be overridden by user-defined env vars.
+var mandatoryEnvKeys = map[string]bool{
+	"CLAUDE_CONFIG_DIR":              true,
+	"POWERLEVEL9K_DISABLE_GITSTATUS": true,
+	"DEVCONTAINER":                   true,
+}
 
 // FindByLabel finds a container (running or stopped) with the claude-bunker label.
 func FindByLabel(ctx context.Context, cli *client.Client, containerName string) (string, error) {
@@ -127,13 +134,8 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 	}
 
 	// Merge user-defined env vars (mandatory vars above always win)
-	mandatoryKeys := map[string]bool{
-		"CLAUDE_CONFIG_DIR":            true,
-		"POWERLEVEL9K_DISABLE_GITSTATUS": true,
-		"DEVCONTAINER":                  true,
-	}
 	for k, v := range opts.ProjectCfg.Env {
-		if !mandatoryKeys[k] {
+		if !mandatoryEnvKeys[k] {
 			env = append(env, k+"="+v)
 		}
 	}
@@ -218,10 +220,24 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 
 	// 3. Run firewall init (exec runs as root, no sudo needed).
 	// Pass the domains file path as an argument so Go is the single source of truth.
-	_, err = ExecNonInteractive(ctx, cli, containerID, "root",
+	_, err = ExecNonInteractive(ctx, cli, containerID, RootUser,
 		[]string{FirewallScriptPath, DomainsFilePath})
 	if err != nil {
 		return fmt.Errorf("init-firewall.sh: %w", err)
+	}
+
+	// 3b. Start the background firewall refresh daemon. It re-resolves all
+	// domains every 5 minutes and atomically swaps the ipset, so CDN/cloud
+	// IP rotations (e.g. Google's proxy.golang.org) don't break connections
+	// after the initial startup resolution. Non-fatal: the firewall is already
+	// up; refresh is a best-effort improvement over the one-shot approach.
+	//
+	// Launched via nohup & inside a shell exec so the Docker exec session
+	// finishes immediately — a detached exec would stay "Running" forever
+	// and fool HasOtherActiveSessions into thinking the container is in use.
+	if _, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
+		[]string{"sh", "-c", "nohup " + RefreshFirewallScriptPath + " " + DomainsFilePath + " >/dev/null 2>&1 &"}); err != nil {
+		fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: firewall refresh daemon: %v\n", err)
 	}
 
 	// 4. Copy host git identity (name/email only, not credential helpers)
@@ -279,7 +295,7 @@ func injectAuthSecrets(ctx context.Context, cli *client.Client, containerID stri
 	createAuthWrapper(&script, ug, opts)
 
 	// Single root exec: write all secrets + wrapper + set all permissions
-	if _, err := ExecNonInteractive(ctx, cli, containerID, "root",
+	if _, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
 		[]string{"sh", "-c", script.String()}); err != nil {
 		return fmt.Errorf("writing auth secrets: %w", err)
 	}
@@ -327,8 +343,7 @@ func createAuthWrapper(script *strings.Builder, ug string, opts RunPostStartOpts
 		return
 	}
 
-	wrapperPath := ContainerHome + "/.claude-auth-wrapper.sh"
-	fmt.Fprintf(script, "cat > %s << 'WRAPPER_EOF'\n", wrapperPath)
+	fmt.Fprintf(script, "cat > %s << 'WRAPPER_EOF'\n", AuthWrapperPath)
 	script.WriteString("#!/bin/sh\n")
 	if opts.ApiKey != "" {
 		fmt.Fprintf(script, "export ANTHROPIC_API_KEY=\"$(cat %s/api_key)\"\n", SecretsDir)
@@ -338,14 +353,12 @@ func createAuthWrapper(script *strings.Builder, ug string, opts RunPostStartOpts
 	}
 	script.WriteString("exec \"$@\"\n")
 	script.WriteString("WRAPPER_EOF\n")
-	fmt.Fprintf(script, "chmod 755 %s && chown %s %s\n", wrapperPath, ug, wrapperPath)
+	fmt.Fprintf(script, "chmod 755 %s && chown %s %s\n", AuthWrapperPath, ug, AuthWrapperPath)
 }
 
 // copyHostGitIdentity extracts user.name and user.email from the host's
 // git config and sets them in the container. Only identity fields are copied;
 // credential helpers and other sensitive config are deliberately excluded.
-//
-// Batched: both git config calls combined into a single exec (saves ~100-200ms).
 func copyHostGitIdentity(ctx context.Context, cli *client.Client, containerID string) error {
 	name, nameErr := execGitConfig("user.name")
 	email, emailErr := execGitConfig("user.email")
@@ -354,18 +367,16 @@ func copyHostGitIdentity(ctx context.Context, cli *client.Client, containerID st
 		return nil // no git identity configured on host
 	}
 
-	var cmds []string
 	if nameErr == nil && name != "" {
-		cmds = append(cmds, fmt.Sprintf("git config --global user.name '%s'", strings.ReplaceAll(name, "'", "'\\''")))
+		if _, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
+			[]string{"git", "config", "--global", "user.name", name}); err != nil {
+			return fmt.Errorf("setting git user.name in container: %w", err)
+		}
 	}
 	if emailErr == nil && email != "" {
-		cmds = append(cmds, fmt.Sprintf("git config --global user.email '%s'", strings.ReplaceAll(email, "'", "'\\''")))
-	}
-
-	if len(cmds) > 0 {
 		if _, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
-			[]string{"sh", "-c", strings.Join(cmds, " && ")}); err != nil {
-			return fmt.Errorf("setting git config in container: %w", err)
+			[]string{"git", "config", "--global", "user.email", email}); err != nil {
+			return fmt.Errorf("setting git user.email in container: %w", err)
 		}
 	}
 

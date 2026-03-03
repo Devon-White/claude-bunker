@@ -119,12 +119,10 @@ func dumpDockerfile() error {
 		return fmt.Errorf("writing Dockerfile: %w", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(outDir, "init-firewall.sh"), container.InitFirewallScript(), 0755); err != nil {
-		return fmt.Errorf("writing init-firewall.sh: %w", err)
-	}
-
-	if err := os.WriteFile(filepath.Join(outDir, "tmux.conf"), container.TmuxConf(), 0644); err != nil {
-		return fmt.Errorf("writing tmux.conf: %w", err)
+	for _, f := range container.BuildContextScripts() {
+		if err := os.WriteFile(filepath.Join(outDir, f.Name), f.Content, f.Mode); err != nil {
+			return fmt.Errorf("writing %s: %w", f.Name, err)
+		}
 	}
 
 	fmt.Println(outDir)

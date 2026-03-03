@@ -1,24 +1,56 @@
 package container
 
-import "embed"
+import (
+	"embed"
+	"io/fs"
+)
 
 //go:embed scripts/*
 var embeddedScripts embed.FS
 
-// InitFirewallScript returns the embedded init-firewall.sh content.
-func InitFirewallScript() []byte {
-	data, err := embeddedScripts.ReadFile("scripts/init-firewall.sh")
+// mustReadEmbedded reads a file from the embedded scripts FS or panics.
+func mustReadEmbedded(name string) []byte {
+	data, err := embeddedScripts.ReadFile("scripts/" + name)
 	if err != nil {
-		panic("embedded init-firewall.sh missing: " + err.Error())
+		panic("embedded " + name + " missing: " + err.Error())
 	}
 	return data
 }
 
-// TmuxConf returns the embedded tmux.conf content.
-func TmuxConf() []byte {
-	data, err := embeddedScripts.ReadFile("scripts/tmux.conf")
-	if err != nil {
-		panic("embedded tmux.conf missing: " + err.Error())
+// Cached embedded script content — read once at package init, reused thereafter.
+var (
+	commonFirewallScript  = mustReadEmbedded("firewall-common.sh")
+	initFirewallScript    = mustReadEmbedded("init-firewall.sh")
+	refreshFirewallScript = mustReadEmbedded("refresh-firewall.sh")
+	tmuxConf              = mustReadEmbedded("tmux.conf")
+)
+
+// InitFirewallScript returns a copy of the embedded init-firewall.sh content.
+func InitFirewallScript() []byte { return append([]byte(nil), initFirewallScript...) }
+
+// RefreshFirewallScript returns a copy of the embedded refresh-firewall.sh content.
+func RefreshFirewallScript() []byte { return append([]byte(nil), refreshFirewallScript...) }
+
+// TmuxConf returns a copy of the embedded tmux.conf content.
+func TmuxConf() []byte { return append([]byte(nil), tmuxConf...) }
+
+// BuildContextFile describes an embedded file that is part of the Docker build
+// context. This is the single source of truth — buildContextTar, dumpDockerfile,
+// genbuild, and fingerprinting all derive from this list.
+type BuildContextFile struct {
+	Name    string
+	Content []byte
+	Mode    fs.FileMode
+}
+
+// BuildContextScripts returns all embedded scripts and configs included in the
+// Docker build context. Adding a new embedded file here automatically propagates
+// to the tar archive, file dump, standalone genbuild tool, and fingerprinting.
+func BuildContextScripts() []BuildContextFile {
+	return []BuildContextFile{
+		{"firewall-common.sh", append([]byte(nil), commonFirewallScript...), 0755},
+		{"init-firewall.sh", InitFirewallScript(), 0755},
+		{"refresh-firewall.sh", RefreshFirewallScript(), 0755},
+		{"tmux.conf", TmuxConf(), 0644},
 	}
-	return data
 }

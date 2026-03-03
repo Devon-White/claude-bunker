@@ -1,7 +1,5 @@
 package container
 
-import "strings"
-
 // builtinDomains is the canonical list of domains allowed through the
 // firewall and the Claude Code sandbox. Both init-firewall.sh (IP-level)
 // and managed-settings.json (domain-level) are derived from this list.
@@ -42,18 +40,3 @@ func SandboxExtraDomains() []string {
 	return out
 }
 
-// ParseExtraDomains splits a comma-separated domain string into a slice,
-// trimming whitespace and skipping empty entries.
-func ParseExtraDomains(csv string) []string {
-	if csv == "" {
-		return nil
-	}
-	var out []string
-	for _, d := range strings.Split(csv, ",") {
-		d = strings.TrimSpace(d)
-		if d != "" {
-			out = append(out, d)
-		}
-	}
-	return out
-}
