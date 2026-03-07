@@ -84,6 +84,13 @@ func LoadProjectConfig(workspace string) (ProjectConfig, error) {
 		return ProjectConfig{}, err
 	}
 	expandProjectConfig(&cfg)
+
+	// Warn if ghToken looks like a literal token value rather than an env var reference.
+	// This catches accidental credential commits — ghToken should normally be "${GH_TOKEN}" or similar.
+	if cfg.GhToken != "" && !strings.Contains(cfg.GhToken, "${") && !strings.HasPrefix(cfg.GhToken, "$") {
+		fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: ghToken in config.json appears to be a literal value, not an env var reference (e.g. \"${GH_TOKEN}\"). Avoid committing credentials to version control.\n")
+	}
+
 	// Normalize domain whitespace before validation
 	for i, d := range cfg.AllowDomains {
 		cfg.AllowDomains[i] = strings.TrimSpace(d)

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -15,6 +16,10 @@ import (
 	"github.com/Devon-White/claude-bunker/internal/config"
 	"github.com/Devon-White/claude-bunker/internal/container"
 )
+
+// safeCmdPattern matches command names that are safe to embed in a shell fragment.
+// Only alphanumeric characters, dashes, underscores, dots, and forward slashes are allowed.
+var safeCmdPattern = regexp.MustCompile(`^[a-zA-Z0-9_./-]+$`)
 
 // ExtractPluginDomains reads MCP configs from host files and extracts HTTP/SSE
 // server domains for firewall allowlisting. Called during resolveNaming() before
@@ -505,10 +510,17 @@ func batchCheckRuntimes(ctx context.Context, cli *client.Client, containerID str
 		return
 	}
 
-	// Collect unique commands
+	// Collect unique commands, sanitizing to prevent shell metacharacter injection.
+	// MCP server command names come from external config files and could contain
+	// arbitrary strings — only include commands with safe characters.
 	var cmds []string
 	for _, c := range checks {
-		cmds = append(cmds, c.cmd)
+		if safeCmdPattern.MatchString(c.cmd) {
+			cmds = append(cmds, c.cmd)
+		}
+	}
+	if len(cmds) == 0 {
+		return
 	}
 
 	// Single exec: check all commands at once, output missing ones

@@ -108,9 +108,9 @@ func ProxyContainerEnv(cfg ProxyConfig) map[string]string {
 	if cfg.ClientKey != "" {
 		env["CLAUDE_CODE_CLIENT_KEY"] = containerCertPath(cfg.ClientKey)
 	}
-	if cfg.ClientKeyPassphrase != "" {
-		env["CLAUDE_CODE_CLIENT_KEY_PASSPHRASE"] = cfg.ClientKeyPassphrase
-	}
+	// ClientKeyPassphrase is injected as a tmpfs file (not env var) by
+	// InjectProxyCerts to avoid exposure via /proc/*/environ and docker inspect.
+	// See InjectProxyCerts for the file write at /run/secrets/client_key_passphrase.
 
 	// Forward proxy DNS resolution flag if set on host
 	if v := os.Getenv("CLAUDE_CODE_PROXY_RESOLVES_HOSTS"); v != "" {
@@ -160,6 +160,21 @@ func InjectProxyCerts(ctx context.Context, cli *client.Client, containerID strin
 			return fmt.Errorf("copying cert %s: %w", basename, err)
 		}
 		fmt.Fprintf(logW, "[claude-bunker] Copied cert %s → %s\n", basename, containerPath)
+	}
+
+	// Write client key passphrase to tmpfs file instead of env var to avoid
+	// exposure via /proc/*/environ and docker inspect.
+	if cfg.ClientKeyPassphrase != "" {
+		passphrasePath := container.SecretsDir + "/client_key_passphrase"
+		if err := container.CopyContentToContainer(ctx, cli, containerID, []byte(cfg.ClientKeyPassphrase), passphrasePath); err != nil {
+			return fmt.Errorf("writing client key passphrase: %w", err)
+		}
+		// Set permissions: readable only by the container user
+		if _, err := container.ExecNonInteractive(ctx, cli, containerID, container.RootUser,
+			[]string{"sh", "-c", fmt.Sprintf("chmod 400 %s && chown %s %s", passphrasePath, container.ContainerUserGroup, passphrasePath)}); err != nil {
+			fmt.Fprintf(logW, "[claude-bunker] WARNING: chmod passphrase: %v\n", err)
+		}
+		fmt.Fprintf(logW, "[claude-bunker] Wrote client key passphrase → %s\n", passphrasePath)
 	}
 
 	// Fix ownership

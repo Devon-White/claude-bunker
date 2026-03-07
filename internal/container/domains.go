@@ -22,8 +22,20 @@ var builtinDomains = []string{
 }
 
 // sandboxExtraDomains are additional domains included only in the
-// managed-settings.json sandbox filter (which supports wildcards) but
-// not in the iptables firewall (which resolves individual domains to IPs).
+// managed-settings.json sandbox filter (sandbox-level), NOT added to the
+// iptables firewall domain file.
+//
+// This asymmetry is intentional:
+//   - The sandbox uses pattern matching (e.g. *.github.com matches any subdomain)
+//     and can handle wildcard patterns directly.
+//   - The firewall resolves each domain to IP addresses via DNS at container start.
+//     Wildcard patterns cannot be IP-resolved, so specific subdomains (e.g.
+//     api.github.com, codeload.github.com) must be listed individually in
+//     builtinDomains for firewall coverage.
+//
+// To allow a new service: add specific subdomains to builtinDomains for firewall
+// access, and optionally add a wildcard here if the sandbox should permit the
+// entire domain family.
 var sandboxExtraDomains = []string{
 	"*.github.com",
 }
@@ -36,6 +48,10 @@ func BuiltinDomains() []string {
 }
 
 // SandboxExtraDomains returns a copy of the sandbox-only domain list.
+// These domains are deliberately excluded from the firewall domain file
+// because they are wildcard patterns that cannot be IP-resolved. They are
+// only used in managed-settings.json where the sandbox performs domain-name
+// pattern matching rather than IP-based filtering.
 func SandboxExtraDomains() []string {
 	out := make([]string, len(sandboxExtraDomains))
 	copy(out, sandboxExtraDomains)

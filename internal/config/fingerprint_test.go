@@ -327,6 +327,29 @@ func TestContainerFingerprint_ChangesOnPlugins(t *testing.T) {
 	}
 }
 
+func TestContainerFingerprint_ChangesOnSeedHistory(t *testing.T) {
+	// Default (nil) vs explicit true should differ from nil
+	cfgDefault := ProjectConfig{}
+	boolTrue := true
+	cfgTrue := ProjectConfig{SeedHistory: &boolTrue}
+	boolFalse := false
+	cfgFalse := ProjectConfig{SeedHistory: &boolFalse}
+
+	fpDefault := ContainerFingerprint(cfgDefault)
+	fpTrue := ContainerFingerprint(cfgTrue)
+	fpFalse := ContainerFingerprint(cfgFalse)
+
+	if fpDefault == fpTrue {
+		t.Error("container fingerprint should change when seedHistory is explicitly set to true vs unset")
+	}
+	if fpDefault == fpFalse {
+		t.Error("container fingerprint should change when seedHistory is set to false vs unset")
+	}
+	if fpTrue == fpFalse {
+		t.Error("container fingerprint should differ between seedHistory true and false")
+	}
+}
+
 func TestPluginLevel(t *testing.T) {
 	tests := []struct {
 		input string

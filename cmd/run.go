@@ -239,6 +239,13 @@ func runInSandbox(passedArgs []string, execCmd string) error {
 	if !r.reused {
 		r.seedSettings()
 	}
+
+	// Re-inject auth secrets on every start (including reuse). Tokens may have
+	// changed since the container was first created, and the tmpfs secrets are
+	// lost if the container was stopped and restarted.
+	if r.reused {
+		r.reinjectAuthSecrets()
+	}
 	r.setupSignals()
 
 	exitCode := r.exec(execCmd, flags.remaining)
@@ -374,6 +381,10 @@ func (r *runner) buildAndCreate() {
 	}
 	r.containerID = id
 
+	if r.projectCfg.PostStartCommand != "" {
+		fmt.Fprintf(os.Stderr, "[claude-bunker] Running postStartCommand from config: %s\n", r.projectCfg.PostStartCommand)
+	}
+
 	if err := container.RunPostStart(r.ctx, r.cli, r.containerID, container.RunPostStartOpts{
 		ExtraDomains:     r.extraDomains,
 		PostStartCommand: r.projectCfg.PostStartCommand,
@@ -386,11 +397,7 @@ func (r *runner) buildAndCreate() {
 
 	// Inject proxy certificates if configured
 	if r.proxyCfg.HasCerts() {
-		var log io.Writer = os.Stderr
-		if verbosity < 0 {
-			log = io.Discard
-		}
-		if err := sandbox.InjectProxyCerts(r.ctx, r.cli, r.containerID, r.proxyCfg, log); err != nil {
+		if err := sandbox.InjectProxyCerts(r.ctx, r.cli, r.containerID, r.proxyCfg, r.logWriter()); err != nil {
 			warn("Failed to inject proxy certs: " + err.Error())
 		}
 	}
@@ -407,12 +414,17 @@ func (r *runner) registerCleanup(teardown bool) {
 	r.mu.Unlock()
 }
 
+// logWriter returns an io.Writer for log output, respecting verbosity.
+func (r *runner) logWriter() io.Writer {
+	if verbosity < 0 {
+		return io.Discard
+	}
+	return os.Stderr
+}
+
 // seedSettings copies settings and session history into the container.
 func (r *runner) seedSettings() {
-	var log io.Writer = os.Stderr
-	if verbosity < 0 {
-		log = io.Discard
-	}
+	log := r.logWriter()
 
 	if err := sandbox.SeedSettings(r.ctx, r.cli, r.containerID, r.workspace, r.extraDomains, r.projectCfg.PluginLevel(), log); err != nil {
 		warn("Failed to seed settings: " + err.Error())
@@ -420,6 +432,26 @@ func (r *runner) seedSettings() {
 	if r.projectCfg.ShouldSeedHistory() {
 		if err := sandbox.SeedSessionHistory(r.ctx, r.cli, r.containerID, r.workspace, log); err != nil {
 			warn("Failed to seed session history: " + err.Error())
+		}
+	}
+}
+
+// reinjectAuthSecrets re-applies auth tokens and proxy certs into a reused
+// container. Tokens on tmpfs may be stale or missing after container restart.
+// Unlike buildAndCreate, this skips firewall/git/domain setup (already done).
+func (r *runner) reinjectAuthSecrets() {
+	if err := container.InjectAuthSecrets(r.ctx, r.cli, r.containerID, container.RunPostStartOpts{
+		GhToken:    r.ghToken,
+		ApiKey:     r.apiKey,
+		OAuthToken: r.oauthToken,
+	}); err != nil {
+		warn("Failed to re-inject auth secrets: " + err.Error())
+	}
+
+	// Re-inject proxy certs if configured
+	if r.proxyCfg.HasCerts() {
+		if err := sandbox.InjectProxyCerts(r.ctx, r.cli, r.containerID, r.proxyCfg, r.logWriter()); err != nil {
+			warn("Failed to re-inject proxy certs: " + err.Error())
 		}
 	}
 }

@@ -12,13 +12,18 @@ IFS=$'\n\t'
 # Started by claude-bunker as a detached background process after init-firewall.sh.
 
 # Source shared DNS resolution and ipset helpers.
-. "$(dirname "$0")/firewall-common.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/firewall-common.sh"
 
 DOMAINS_FILE="${1:-/tmp/.bunker-domains}"
 INTERVAL="${2:-300}"   # Default: 5 minutes
 
+[[ "$INTERVAL" =~ ^[0-9]+$ ]] || { echo "Invalid interval: $INTERVAL" >&2; exit 1; }
+
 IPSET_LIVE="$IPSET_NAME"
 IPSET_TMP="${IPSET_NAME}-new"
+
+REFRESH_LOG="/tmp/refresh-firewall.log"
 
 refresh() {
     # Create temp set, or flush if it lingered from a previous failed run.
@@ -28,17 +33,31 @@ refresh() {
     while IFS= read -r domain || [ -n "$domain" ]; do
         domain="${domain%$'\r'}"
         [ -z "$domain" ] && continue
+        # Strip leading '!' critical marker before resolution.
+        domain="${domain#!}"
+        [ -z "$domain" ] && continue
 
         if add_ips_to_set "$domain" "$IPSET_TMP" 0; then
             count=$((count + 1))
         fi
     done < "$DOMAINS_FILE"
 
-    # Safety: if DNS completely failed, keep the existing live set rather than
-    # swapping in an empty set (which would kill all allowed traffic).
+    # Safety: if DNS completely failed for all domains, keep the existing live
+    # set rather than swapping in an empty set (which would kill all allowed traffic).
     if [ "$count" -eq 0 ]; then
+        echo "WARNING: No domains resolved, skipping swap" >&2
         ipset destroy "$IPSET_TMP" 2>/dev/null || true
-        return
+        return 1
+    fi
+
+    # Safety: verify the new ipset actually contains IP entries, not just that
+    # DNS calls returned without error.
+    local ip_count
+    ip_count=$(ipset list "$IPSET_TMP" 2>/dev/null | grep -c "^[0-9]" || echo 0)
+    if [[ "$ip_count" -eq 0 ]]; then
+        echo "WARNING: No IPs in new ipset, skipping swap" >&2
+        ipset destroy "$IPSET_TMP" 2>/dev/null || true
+        return 1
     fi
 
     # Atomic swap: the live set instantly gets the freshly resolved IPs.
@@ -50,5 +69,9 @@ refresh() {
 
 while true; do
     sleep "$INTERVAL"
-    refresh 2>/dev/null || true
+    # Truncate log if it exceeds 1 MB to avoid filling disk.
+    if [ -f "$REFRESH_LOG" ] && [ "$(wc -c < "$REFRESH_LOG")" -gt 1048576 ]; then
+        : > "$REFRESH_LOG"
+    fi
+    refresh 2>>"$REFRESH_LOG" || true
 done

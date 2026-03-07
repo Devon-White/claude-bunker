@@ -2,7 +2,7 @@ package container
 
 import (
 	"context"
-	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,6 +18,64 @@ import (
 
 	"github.com/Devon-White/claude-bunker/internal/config"
 )
+
+// seccompProfile is a custom seccomp profile that allows most syscalls but
+// blocks dangerous kernel interfaces. This is a pragmatic middle ground between
+// Docker's default profile (which blocks syscalls bubblewrap needs like
+// pivot_root, clone, unshare, mount) and seccomp=unconfined (which allows
+// everything). The default action is ALLOW, with an explicit blocklist of the
+// most dangerous syscalls that have no legitimate use inside the sandbox.
+var seccompProfile = func() string {
+	type seccompArch struct {
+		Arch      string   `json:"architecture"`
+		SubArchs  []string `json:"subArchitectures,omitempty"`
+	}
+	type seccompSyscall struct {
+		Names  []string `json:"names"`
+		Action string   `json:"action"`
+	}
+	type seccompProfileDef struct {
+		DefaultAction string           `json:"defaultAction"`
+		Architectures []seccompArch    `json:"architectures,omitempty"`
+		Syscalls      []seccompSyscall `json:"syscalls"`
+	}
+
+	profile := seccompProfileDef{
+		DefaultAction: "SCMP_ACT_ALLOW",
+		Syscalls: []seccompSyscall{
+			{
+				Names: []string{
+					"kexec_load",
+					"kexec_file_load",
+					"perf_event_open",
+					"bpf",
+					"add_key",
+					"keyctl",
+					"request_key",
+					"init_module",
+					"finit_module",
+					"delete_module",
+					"reboot",
+					"swapon",
+					"swapoff",
+					"nfsservctl",
+					"personality",
+					"acct",
+					"lookup_dcookie",
+					"kcmp",
+					"open_by_handle_at",
+				},
+				Action: "SCMP_ACT_ERRNO",
+			},
+		},
+	}
+
+	data, err := json.Marshal(profile)
+	if err != nil {
+		panic("failed to marshal seccomp profile: " + err.Error())
+	}
+	return string(data)
+}()
 
 // mandatoryEnvKeys lists environment variables that are always set by
 // claude-bunker and must not be overridden by user-defined env vars.
@@ -102,6 +160,9 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 		{
 			Type:   mount.TypeTmpfs,
 			Target: ContainerWorkspace + "/.claude",
+			TmpfsOptions: &mount.TmpfsOptions{
+				SizeBytes: 256 * 1024 * 1024, // 256MB limit
+			},
 		},
 	}
 
@@ -167,17 +228,19 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 		OpenStdin: false,
 	}
 
-	// Security tradeoff: apparmor=unconfined and seccomp=unconfined are
-	// required because bubblewrap (bwrap) needs to create user namespaces
-	// and call pivot_root, which Docker's default AppArmor and seccomp
-	// profiles block. bwrap is Claude Code's inner sandbox — it provides
+	// Security tradeoff: apparmor=unconfined is required because bubblewrap
+	// (bwrap) needs to create user namespaces and call pivot_root, which
+	// Docker's default AppArmor profile blocks. A custom seccomp profile
+	// replaces the previous seccomp=unconfined — it defaults to ALLOW but
+	// blocks the most dangerous kernel interfaces (module loading, kexec,
+	// BPF, reboot, etc.). bwrap is Claude Code's inner sandbox — it provides
 	// filesystem write restrictions that are the primary defense layer
 	// inside the container. The iptables firewall and managed-settings.json
 	// provide the outer defense layers.
 	hostCfg := &container.HostConfig{
 		Mounts:  mounts,
 		CapAdd:  []string{"NET_ADMIN", "NET_RAW"},
-		SecurityOpt: []string{"apparmor=unconfined", "seccomp=unconfined"},
+		SecurityOpt: []string{"apparmor=unconfined", "seccomp=" + seccompProfile},
 	}
 
 	networkCfg := &network.NetworkingConfig{}
@@ -257,7 +320,7 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 	// finishes immediately — a detached exec would stay "Running" forever
 	// and fool HasOtherActiveSessions into thinking the container is in use.
 	if _, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
-		[]string{"sh", "-c", "nohup " + RefreshFirewallScriptPath + " " + DomainsFilePath + " >/dev/null 2>&1 &"}); err != nil {
+		[]string{"sh", "-c", fmt.Sprintf("nohup '%s' '%s' >/dev/null 2>&1 &", RefreshFirewallScriptPath, DomainsFilePath)}); err != nil {
 		fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: firewall refresh daemon: %v\n", err)
 	}
 
@@ -268,7 +331,7 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 	}
 
 	// 5. Inject auth secrets (if provided)
-	if err := injectAuthSecrets(ctx, cli, containerID, opts); err != nil {
+	if err := InjectAuthSecrets(ctx, cli, containerID, opts); err != nil {
 		return fmt.Errorf("auth injection: %w", err)
 	}
 
@@ -292,14 +355,14 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 	return nil
 }
 
-// injectAuthSecrets injects authentication tokens into the container via tmpfs.
+// InjectAuthSecrets injects authentication tokens into the container via tmpfs.
 // Tokens are stored as files in /run/secrets/ (never as environment variables)
 // so they don't appear in docker inspect or /proc/*/environ.
 //
 // Batched: all file writes + permission changes happen in a single root exec
 // call, followed by a single user exec for git config. This reduces Docker API
 // round-trips from ~10 to 2 (saving ~1-2s of exec overhead).
-func injectAuthSecrets(ctx context.Context, cli *client.Client, containerID string, opts RunPostStartOpts) error {
+func InjectAuthSecrets(ctx context.Context, cli *client.Client, containerID string, opts RunPostStartOpts) error {
 	hasSecrets := opts.GhToken != "" || opts.ApiKey != "" || opts.OAuthToken != ""
 	if !hasSecrets {
 		return nil
@@ -312,7 +375,9 @@ func injectAuthSecrets(ctx context.Context, cli *client.Client, containerID stri
 
 	ug := ContainerUserGroup
 
-	writeSecretFiles(&script, ug, opts)
+	if err := writeSecretFiles(ctx, cli, containerID, &script, ug, opts); err != nil {
+		return err
+	}
 	createAuthWrapper(&script, ug, opts)
 
 	// Single root exec: write all secrets + wrapper + set all permissions
@@ -333,9 +398,11 @@ func injectAuthSecrets(ctx context.Context, cli *client.Client, containerID stri
 	return nil
 }
 
-// writeSecretFiles appends shell commands to script that write each provided
-// token to the secrets tmpfs as a base64-decoded file with locked-down permissions.
-func writeSecretFiles(script *strings.Builder, ug string, opts RunPostStartOpts) {
+// writeSecretFiles writes each provided token directly to the secrets tmpfs
+// using the Docker CopyContentToContainer API, avoiding shell commands that
+// would expose tokens in /proc/*/cmdline. Permissions are set via the shell
+// script (which only runs chmod/chown, not the secret data).
+func writeSecretFiles(ctx context.Context, cli *client.Client, containerID string, script *strings.Builder, ug string, opts RunPostStartOpts) error {
 	type secret struct {
 		token string
 		file  string
@@ -349,10 +416,13 @@ func writeSecretFiles(script *strings.Builder, ug string, opts RunPostStartOpts)
 		if s.token == "" {
 			continue
 		}
-		encoded := base64.StdEncoding.EncodeToString([]byte(s.token))
-		fmt.Fprintf(script, "echo '%s' | base64 -d > %s/%s\n", encoded, SecretsDir, s.file)
-		fmt.Fprintf(script, "chmod 400 %s/%s && chown %s %s/%s\n", SecretsDir, s.file, ug, SecretsDir, s.file)
+		containerPath := SecretsDir + "/" + s.file
+		if err := CopyContentToContainer(ctx, cli, containerID, []byte(s.token), containerPath); err != nil {
+			return fmt.Errorf("writing secret %s: %w", s.file, err)
+		}
+		fmt.Fprintf(script, "chmod 400 %s && chown %s %s\n", containerPath, ug, containerPath)
 	}
+	return nil
 }
 
 // createAuthWrapper appends shell commands to script that create a wrapper

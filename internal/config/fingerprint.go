@@ -132,6 +132,15 @@ func ContainerFingerprint(projectCfg ProjectConfig) string {
 		h.Write([]byte("plugins:" + projectCfg.Plugins))
 	}
 
+	// SeedHistory controls whether session history is copied into the container
+	if projectCfg.SeedHistory != nil {
+		if *projectCfg.SeedHistory {
+			h.Write([]byte("seedhistory:true"))
+		} else {
+			h.Write([]byte("seedhistory:false"))
+		}
+	}
+
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 

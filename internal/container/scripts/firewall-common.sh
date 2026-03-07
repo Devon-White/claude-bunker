@@ -1,6 +1,7 @@
 #!/bin/bash
 # firewall-common.sh — shared functions for init-firewall.sh and refresh-firewall.sh.
 # Sourced (not executed directly) by both scripts.
+# NOTE: This file must be sourced by a script with set -euo pipefail
 
 # Canonical ipset name used by both initial setup and periodic refresh.
 # Uses hash:net to support /24 subnet entries for CDN IP rotation resilience.
@@ -16,9 +17,18 @@ resolve_domain() {
     } | sort -u
 }
 
-# is_ipv4: Returns 0 if the argument looks like an IPv4 address.
+# is_ipv4: Returns 0 if the argument is a valid IPv4 address (each octet 0-255).
 is_ipv4() {
-    [[ "$1" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]
+    local IFS='.'
+    local -a octets
+    read -ra octets <<< "$1"
+    [[ ${#octets[@]} -eq 4 ]] || return 1
+    local o
+    for o in "${octets[@]}"; do
+        [[ "$o" =~ ^[0-9]+$ ]] || return 1
+        (( o >= 0 && o <= 255 )) || return 1
+    done
+    return 0
 }
 
 # ip_to_24: Converts an IPv4 address to its /24 CIDR block.

@@ -89,6 +89,17 @@ func isNameCont(c byte) bool {
 // expandProjectConfig applies env var expansion to all user-facing string
 // fields in cfg. Called at load time so downstream consumers receive resolved
 // values without any changes.
+//
+// Fields that support $VAR / ${VAR} / ${VAR:-default} expansion:
+//   - Workspace, PostStartCommand, GhToken, Plugins (scalar strings)
+//   - Exclude, AllowDomains, Apt (string slice elements)
+//   - Env values (map values only, not keys)
+//   - Features option values (string values only, not feature keys or option keys)
+//
+// Fields that are NOT expanded:
+//   - Feature keys (the map keys in the "features" object)
+//   - Env keys, Features option keys
+//   - SeedHistory (boolean, not a string)
 func expandProjectConfig(cfg *ProjectConfig) {
 	cfg.Workspace = expandEnvVars(cfg.Workspace)
 	cfg.PostStartCommand = expandEnvVars(cfg.PostStartCommand)

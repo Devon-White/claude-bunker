@@ -46,6 +46,10 @@ ENV DEVCONTAINER=true
 ENV SHELL=/bin/bash
 
 # Install Claude Code via native installer
+# TODO: pin installer hash for supply chain security — the install script is
+# fetched over HTTPS from claude.ai on every build, with no checksum verification.
+# A compromised CDN or MITM could inject malicious code. Consider downloading
+# to a temp file, verifying a known SHA-256 hash, then executing.
 RUN curl -fsSL https://claude.ai/install.sh | bash
 ENV PATH="{{.Home}}/.local/bin:$PATH"
 

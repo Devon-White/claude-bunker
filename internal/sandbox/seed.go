@@ -144,8 +144,10 @@ func SeedSessionHistory(ctx context.Context, cli *client.Client, containerID, wo
 		return nil // no sessions for this project on host
 	}
 
-	// Ensure the container's session directory exists
-	containerSessionDir := container.ContainerHome + "/.claude/projects/-workspace/"
+	// Ensure the container's session directory exists.
+	// Use encodeProjectPath to derive the encoded form of the container workspace
+	// path, matching how Claude Code encodes project paths internally.
+	containerSessionDir := container.ContainerHome + "/.claude/projects/" + encodeProjectPath(container.ContainerWorkspace) + "/"
 	if _, err := container.ExecNonInteractive(ctx, cli, containerID, container.ContainerUser,
 		[]string{"mkdir", "-p", containerSessionDir}); err != nil {
 		fmt.Fprintf(logW, "[claude-bunker] WARNING: mkdir -p %s: %v\n", containerSessionDir, err)
