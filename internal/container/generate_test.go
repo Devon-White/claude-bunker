@@ -7,7 +7,7 @@ import (
 
 func TestGenerateDockerfile_NoLayers(t *testing.T) {
 	base := "FROM debian:bookworm-slim\nRUN echo hello"
-	got, err := GenerateDockerfile(base, nil, nil, nil)
+	got, err := GenerateDockerfile(DockerfileOpts{BaseDockerfile: base})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -23,7 +23,7 @@ func TestGenerateDockerfile_NoLayers(t *testing.T) {
 
 func TestGenerateDockerfile_AptPackages(t *testing.T) {
 	base := "FROM debian:bookworm-slim"
-	got, err := GenerateDockerfile(base, nil, []string{"vim", "curl", "git"}, nil)
+	got, err := GenerateDockerfile(DockerfileOpts{BaseDockerfile: base, AptPackages: []string{"vim", "curl", "git"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestGenerateDockerfile_UserEnv(t *testing.T) {
 		"FOO": "bar",
 		"BAZ": "qux",
 	}
-	got, err := GenerateDockerfile(base, nil, nil, env)
+	got, err := GenerateDockerfile(DockerfileOpts{BaseDockerfile: base, UserEnv: env})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestGenerateDockerfile_Features(t *testing.T) {
 			},
 		},
 	}
-	got, err := GenerateDockerfile(base, features, nil, nil)
+	got, err := GenerateDockerfile(DockerfileOpts{BaseDockerfile: base, Features: features})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestGenerateDockerfile_ContainerEnvBeforeInstall(t *testing.T) {
 			},
 		},
 	}
-	got, err := GenerateDockerfile(base, features, nil, nil)
+	got, err := GenerateDockerfile(DockerfileOpts{BaseDockerfile: base, Features: features})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,9 +143,40 @@ func TestGenerateDockerfile_ContainerEnvBeforeInstall(t *testing.T) {
 	}
 }
 
+func TestGenerateDockerfile_OnCreateCommand(t *testing.T) {
+	base := "FROM debian:bookworm-slim"
+	got, err := GenerateDockerfile(DockerfileOpts{BaseDockerfile: base, OnCreateCommand: "pip install uv"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(got, "# onCreateCommand") {
+		t.Error("missing onCreateCommand header")
+	}
+	if !strings.Contains(got, "RUN pip install uv") {
+		t.Error("missing onCreateCommand RUN instruction")
+	}
+	// Should end with USER claude-bunker
+	trimmed := strings.TrimSpace(got)
+	if !strings.HasSuffix(trimmed, "USER "+ContainerUser) {
+		t.Errorf("Dockerfile should end with USER %s", ContainerUser)
+	}
+}
+
+func TestGenerateDockerfile_OnCreateCommandEmpty(t *testing.T) {
+	base := "FROM debian:bookworm-slim"
+	got, err := GenerateDockerfile(DockerfileOpts{BaseDockerfile: base})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(got, "onCreateCommand") {
+		t.Error("should not have onCreateCommand section when empty")
+	}
+}
+
 func TestGenerateDockerfile_EndsWithUser(t *testing.T) {
 	base := "FROM debian:bookworm-slim"
-	got, err := GenerateDockerfile(base, nil, []string{"vim"}, map[string]string{"A": "1"})
+	got, err := GenerateDockerfile(DockerfileOpts{BaseDockerfile: base, AptPackages: []string{"vim"}, UserEnv: map[string]string{"A": "1"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

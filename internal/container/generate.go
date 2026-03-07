@@ -19,6 +19,15 @@ var validEnvKey = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 // validFeatureID matches safe feature IDs: alphanumeric, hyphens, underscores.
 var validFeatureID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_\-]*$`)
 
+// DockerfileOpts holds all inputs for generating a Dockerfile with project layers.
+type DockerfileOpts struct {
+	BaseDockerfile  string
+	Features        []ResolvedFeature
+	AptPackages     []string
+	UserEnv         map[string]string
+	OnCreateCommand string
+}
+
 // GenerateDockerfile appends apt packages, feature install layers, and user
 // env vars to the base Dockerfile. The generated Dockerfile always ends with
 // USER claude-bunker to ensure the container runs as the unprivileged user.
@@ -27,19 +36,19 @@ var validFeatureID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_\-]*$`)
 // instructions BEFORE the install script runs (so PATH is available during
 // installation), and options are passed via a sourced env file rather than
 // persisted as image ENV vars.
-func GenerateDockerfile(baseDockerfile string, features []ResolvedFeature, aptPackages []string, userEnv map[string]string) (string, error) {
+func GenerateDockerfile(opts DockerfileOpts) (string, error) {
 	var b strings.Builder
-	b.WriteString(baseDockerfile)
+	b.WriteString(opts.BaseDockerfile)
 
-	hasLayers := len(features) > 0 || len(aptPackages) > 0 || len(userEnv) > 0
+	hasLayers := len(opts.Features) > 0 || len(opts.AptPackages) > 0 || len(opts.UserEnv) > 0
 	if hasLayers {
 		b.WriteString("\n\n# --- claude-bunker: generated layers ---\n")
 	}
 
 	// Apt packages layer (runs before features so features can depend on them)
-	if len(aptPackages) > 0 {
-		sorted := make([]string, len(aptPackages))
-		copy(sorted, aptPackages)
+	if len(opts.AptPackages) > 0 {
+		sorted := make([]string, len(opts.AptPackages))
+		copy(sorted, opts.AptPackages)
 		sort.Strings(sorted)
 		for _, pkg := range sorted {
 			if !validAptPkg.MatchString(pkg) {
@@ -56,7 +65,7 @@ func GenerateDockerfile(baseDockerfile string, features []ResolvedFeature, aptPa
 	}
 
 	// Append feature install layers
-	for _, f := range features {
+	for _, f := range opts.Features {
 		if !validFeatureID.MatchString(f.ID) {
 			return "", fmt.Errorf("invalid feature ID %q: must match %s", f.ID, validFeatureID.String())
 		}
@@ -84,11 +93,18 @@ func GenerateDockerfile(baseDockerfile string, features []ResolvedFeature, aptPa
 			f.ID, f.ID))
 	}
 
+	// onCreateCommand: arbitrary shell command baked into the image
+	if opts.OnCreateCommand != "" {
+		b.WriteString("\n# onCreateCommand\n")
+		b.WriteString("USER root\n")
+		b.WriteString(fmt.Sprintf("RUN %s\n", opts.OnCreateCommand))
+	}
+
 	// Append user-defined env vars
-	if len(userEnv) > 0 {
+	if len(opts.UserEnv) > 0 {
 		b.WriteString("\n# User environment variables\n")
-		keys := make([]string, 0, len(userEnv))
-		for k := range userEnv {
+		keys := make([]string, 0, len(opts.UserEnv))
+		for k := range opts.UserEnv {
 			if !validEnvKey.MatchString(k) {
 				return "", fmt.Errorf("invalid env var key %q: must match %s", k, validEnvKey.String())
 			}
@@ -96,7 +112,7 @@ func GenerateDockerfile(baseDockerfile string, features []ResolvedFeature, aptPa
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			b.WriteString(fmt.Sprintf("ENV %s=%q\n", k, userEnv[k]))
+			b.WriteString(fmt.Sprintf("ENV %s=%q\n", k, opts.UserEnv[k]))
 		}
 	}
 

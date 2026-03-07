@@ -181,6 +181,7 @@ type initSettings struct {
 	plugins          string
 	aptPackages      string // space-separated
 	envVars          string // KEY=VALUE per line
+	onCreateCommand  string
 	postStartCommand string
 	seedHistory      bool
 }
@@ -271,6 +272,11 @@ func selectSettings() (initSettings, error) {
 
 		// Page 6: Hooks (shown only if toggled)
 		huh.NewGroup(
+			huh.NewInput().
+				Title("On-create command").
+				Description("Shell command baked into the image at build time (e.g. pip install uv)").
+				Placeholder("leave empty for none").
+				Value(&s.onCreateCommand),
 			huh.NewInput().
 				Title("Post-start command").
 				Description("Shell command to run after the sandbox starts (e.g. npm install)").
@@ -371,6 +377,10 @@ func mergeSettings(cfg map[string]interface{}, s initSettings) {
 		if len(env) > 0 {
 			cfg["env"] = env
 		}
+	}
+
+	if s.onCreateCommand != "" {
+		cfg["onCreateCommand"] = s.onCreateCommand
 	}
 
 	if s.postStartCommand != "" {

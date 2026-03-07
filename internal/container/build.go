@@ -67,12 +67,20 @@ func BuildImage(ctx context.Context, cli *client.Client, imageTag string, stream
 	// Generate Dockerfile — 3 cases:
 	var dockerfile string
 	var err error
+	genOpts := DockerfileOpts{
+		Features:        features,
+		AptPackages:     projectCfg.Apt,
+		UserEnv:         projectCfg.Env,
+		OnCreateCommand: projectCfg.OnCreateCommand,
+	}
 	if pulled && hasProjectLayers {
 		// Minimal: FROM <ghcr-ref> + project layers only
-		dockerfile, err = GenerateDockerfile("FROM "+baseRef+"\n", features, projectCfg.Apt, projectCfg.Env)
+		genOpts.BaseDockerfile = "FROM " + baseRef + "\n"
+		dockerfile, err = GenerateDockerfile(genOpts)
 	} else if hasProjectLayers {
 		// Full local build + project layers
-		dockerfile, err = GenerateDockerfile(generateBaseContent(), features, projectCfg.Apt, projectCfg.Env)
+		genOpts.BaseDockerfile = generateBaseContent()
+		dockerfile, err = GenerateDockerfile(genOpts)
 	} else {
 		// Full local build, no project layers
 		dockerfile = GenerateBaseDockerfile()

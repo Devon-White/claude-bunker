@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/sha256"
 	"fmt"
+	"hash"
 	"os"
 	"path"
 	"path/filepath"
@@ -44,13 +45,7 @@ func ImageFingerprint(b BuildInput) string {
 	}
 
 	// Hash apt packages (sorted, since they affect the image)
-	if len(b.ProjectCfg.Apt) > 0 {
-		sorted := make([]string, len(b.ProjectCfg.Apt))
-		copy(sorted, b.ProjectCfg.Apt)
-		sort.Strings(sorted)
-		h.Write([]byte("apt:"))
-		h.Write([]byte(strings.Join(sorted, ",")))
-	}
+	hashSortedSlice(h, "apt:", b.ProjectCfg.Apt)
 
 	// Hash features config (affects image layers)
 	if len(b.ProjectCfg.Features) > 0 {
@@ -72,6 +67,12 @@ func ImageFingerprint(b BuildInput) string {
 				h.Write([]byte(fmt.Sprintf("%s=%v,", k, opts[k])))
 			}
 		}
+	}
+
+	// Hash onCreateCommand (baked into image as a RUN layer)
+	if b.ProjectCfg.OnCreateCommand != "" {
+		h.Write([]byte("oncreate:"))
+		h.Write([]byte(b.ProjectCfg.OnCreateCommand))
 	}
 
 	// Hash user env vars that are baked into the image via GenerateDockerfile
@@ -100,13 +101,7 @@ func ContainerFingerprint(projectCfg ProjectConfig) string {
 	h := sha256.New()
 
 	// AllowDomains affect firewall setup at container start
-	if len(projectCfg.AllowDomains) > 0 {
-		sorted := make([]string, len(projectCfg.AllowDomains))
-		copy(sorted, projectCfg.AllowDomains)
-		sort.Strings(sorted)
-		h.Write([]byte("domains:"))
-		h.Write([]byte(strings.Join(sorted, ",")))
-	}
+	hashSortedSlice(h, "domains:", projectCfg.AllowDomains)
 
 	// Workspace subpath affects container workdir
 	if projectCfg.Workspace != "" {
@@ -114,13 +109,7 @@ func ContainerFingerprint(projectCfg ProjectConfig) string {
 	}
 
 	// Exclude paths affect tmpfs mounts
-	if len(projectCfg.Exclude) > 0 {
-		sorted := make([]string, len(projectCfg.Exclude))
-		copy(sorted, projectCfg.Exclude)
-		sort.Strings(sorted)
-		h.Write([]byte("exclude:"))
-		h.Write([]byte(strings.Join(sorted, ",")))
-	}
+	hashSortedSlice(h, "exclude:", projectCfg.Exclude)
 
 	// PostStartCommand runs at container start
 	if projectCfg.PostStartCommand != "" {
@@ -256,6 +245,19 @@ func EffectiveWorkdir(cfg ProjectConfig) (string, error) {
 		return result, nil
 	}
 	return "/workspace", nil
+}
+
+// hashSortedSlice writes a sorted copy of items to h with the given prefix.
+// No-op when items is empty.
+func hashSortedSlice(h hash.Hash, prefix string, items []string) {
+	if len(items) == 0 {
+		return
+	}
+	sorted := make([]string, len(items))
+	copy(sorted, items)
+	sort.Strings(sorted)
+	h.Write([]byte(prefix))
+	h.Write([]byte(strings.Join(sorted, ",")))
 }
 
 // ExtraDomains returns a copy of the project's extra allowed domains.

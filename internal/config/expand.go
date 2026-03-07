@@ -91,7 +91,7 @@ func isNameCont(c byte) bool {
 // values without any changes.
 //
 // Fields that support $VAR / ${VAR} / ${VAR:-default} expansion:
-//   - Workspace, PostStartCommand, GhToken, Plugins (scalar strings)
+//   - Workspace, OnCreateCommand, PostStartCommand, GhToken, Plugins (scalar strings)
 //   - Exclude, AllowDomains, Apt (string slice elements)
 //   - Env values (map values only, not keys)
 //   - Features option values (string values only, not feature keys or option keys)
@@ -102,6 +102,7 @@ func isNameCont(c byte) bool {
 //   - SeedHistory (boolean, not a string)
 func expandProjectConfig(cfg *ProjectConfig) {
 	cfg.Workspace = expandEnvVars(cfg.Workspace)
+	cfg.OnCreateCommand = expandEnvVars(cfg.OnCreateCommand)
 	cfg.PostStartCommand = expandEnvVars(cfg.PostStartCommand)
 	cfg.GhToken = expandEnvVars(cfg.GhToken)
 	cfg.Plugins = expandEnvVars(cfg.Plugins)
