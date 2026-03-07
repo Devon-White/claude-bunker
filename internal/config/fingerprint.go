@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -126,6 +127,11 @@ func ContainerFingerprint(projectCfg ProjectConfig) string {
 		h.Write([]byte("poststart:" + projectCfg.PostStartCommand))
 	}
 
+	// Plugins level affects which configs/caches are seeded
+	if projectCfg.Plugins != "" {
+		h.Write([]byte("plugins:" + projectCfg.Plugins))
+	}
+
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
@@ -234,7 +240,7 @@ func ClearFingerprint(containerName string) error {
 func EffectiveWorkdir(cfg ProjectConfig) (string, error) {
 	if cfg.Workspace != "" && cfg.Workspace != "." {
 		sub := strings.TrimPrefix(cfg.Workspace, "./")
-		result := filepath.Clean("/workspace/" + sub)
+		result := path.Clean("/workspace/" + sub)
 		if result != "/workspace" && !strings.HasPrefix(result, "/workspace/") {
 			return "", fmt.Errorf("workspace path %q resolves to %q, which is outside /workspace/", cfg.Workspace, result)
 		}

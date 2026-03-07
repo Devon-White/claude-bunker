@@ -308,6 +308,46 @@ func TestEffectiveWorkdir_Traversal(t *testing.T) {
 	}
 }
 
+func TestContainerFingerprint_ChangesOnPlugins(t *testing.T) {
+	cfg1 := ProjectConfig{}
+	cfg2 := ProjectConfig{Plugins: "user"}
+
+	fp1 := ContainerFingerprint(cfg1)
+	fp2 := ContainerFingerprint(cfg2)
+
+	if fp1 == fp2 {
+		t.Error("container fingerprint should change when plugins field changes")
+	}
+
+	// Different plugin levels should produce different fingerprints
+	cfg3 := ProjectConfig{Plugins: "all"}
+	fp3 := ContainerFingerprint(cfg3)
+	if fp2 == fp3 {
+		t.Error("container fingerprint should differ between plugin levels")
+	}
+}
+
+func TestPluginLevel(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", ""},
+		{"false", ""},
+		{"invalid", ""},
+		{"project", "project"},
+		{"user", "user"},
+		{"all", "all"},
+	}
+	for _, tt := range tests {
+		cfg := ProjectConfig{Plugins: tt.input}
+		got := cfg.PluginLevel()
+		if got != tt.want {
+			t.Errorf("PluginLevel(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 // Ensure HOME env var is set for test (needed for CacheDir)
 func init() {
 	if os.Getenv("HOME") == "" {

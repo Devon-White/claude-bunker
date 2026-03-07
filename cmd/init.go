@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"slices"
+	"strings"
 	"sync"
 
 	"github.com/charmbracelet/huh"
@@ -50,18 +52,20 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return writeConfig(cfgPath, nil)
 	}
 
-	// Interactive wizard
+	// Interactive wizard — multi-page form
+	//
+	// Page 1: Languages / runtimes
+	// Page 2: Network (allowDomains, ghToken)
+	// Page 3: Plugins (plugins level)
+	// Page 4: Extras (apt packages, env vars, postStartCommand, seedHistory)
+
+	// --- Page 1: Languages ---
 	selected, err := selectLanguages()
 	if err != nil {
-		// User aborted (Ctrl+C) → write empty config
 		return writeConfig(cfgPath, nil)
 	}
 
-	if len(selected) == 0 {
-		return writeConfig(cfgPath, nil)
-	}
-
-	// Pre-fetch all tags and versions concurrently
+	// Pre-fetch tags/versions concurrently while we collect other settings
 	type prefetchResult struct {
 		tag      string
 		versions []string
@@ -79,32 +83,33 @@ func runInit(cmd *cobra.Command, args []string) error {
 			}
 		}(i, idx)
 	}
+
+	// --- Pages 2-4: Settings form (runs while prefetch continues) ---
+	settings, err := selectSettings()
+	if err != nil {
+		return writeConfig(cfgPath, nil)
+	}
+
+	// --- Language version selection (sequential, needs prefetch results) ---
 	wg.Wait()
 
-	// Interactive version selection (sequential — needs user input)
 	selections := make([]initSelection, 0, len(selected))
-
 	for i, idx := range selected {
 		preset := container.Presets[idx]
-		tag := results[i].tag
-		versions := results[i].versions
-
-		// Pick language version
-		version, err := selectVersion(preset, tag, versions)
+		version, err := selectVersion(preset, results[i].tag, results[i].versions)
 		if err != nil {
-			// User aborted → write empty config
 			return writeConfig(cfgPath, nil)
 		}
-
 		selections = append(selections, initSelection{
 			preset:  preset,
-			tag:     tag,
+			tag:     results[i].tag,
 			version: version,
 		})
 	}
 
-	// Build config map
+	// Build config map from all inputs
 	cfg := buildConfig(selections)
+	mergeSettings(cfg, settings)
 
 	return writeConfig(cfgPath, cfg)
 }
@@ -169,10 +174,130 @@ type initSelection struct {
 	version string
 }
 
+// initSettings holds values collected from the settings form pages.
+type initSettings struct {
+	allowDomains     string // comma-separated
+	ghToken          string
+	plugins          string
+	aptPackages      string // space-separated
+	envVars          string // KEY=VALUE per line
+	postStartCommand string
+	seedHistory      bool
+}
+
+// settingKey identifies a toggleable setting section.
+const (
+	settingNetwork  = "network"
+	settingPlugins  = "plugins"
+	settingPackages = "packages"
+	settingEnv      = "env"
+	settingHooks    = "hooks"
+)
+
+// selectSettings shows a toggle picker followed by conditional detail pages.
+// Only the sections the user enables are shown as subsequent form pages.
+func selectSettings() (initSettings, error) {
+	s := initSettings{
+		seedHistory: true,
+	}
+
+	// Which sections to configure
+	var enabled []string
+
+	err := huh.NewForm(
+		// Page 1: Toggle which settings to configure
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Configure additional settings").
+				Description("Space to toggle, Enter to confirm. Skipped sections use defaults.").
+				Options(
+					huh.NewOption("Network & Auth — firewall domains, GitHub token", settingNetwork),
+					huh.NewOption("Plugins — MCP server & plugin forwarding", settingPlugins),
+					huh.NewOption("Packages — extra apt packages in the sandbox", settingPackages),
+					huh.NewOption("Environment — env vars for the container", settingEnv),
+					huh.NewOption("Hooks — post-start command, session history", settingHooks),
+				).
+				Value(&enabled),
+		).Title("Settings"),
+
+		// Page 2: Network (shown only if toggled)
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Extra allowed domains").
+				Description("Comma-separated domains to allow through the firewall (e.g. registry.npmjs.org, pypi.org)").
+				Placeholder("leave empty for defaults only").
+				Value(&s.allowDomains),
+			huh.NewInput().
+				Title("GitHub token").
+				Description("Fine-grained PAT for git auth inside the sandbox (or use $GH_TOKEN)").
+				Placeholder("ghp_... or $GH_TOKEN").
+				Value(&s.ghToken),
+		).Title("Network & Auth").
+			WithHideFunc(func() bool { return !slices.Contains(enabled, settingNetwork) }),
+
+		// Page 3: Plugins (shown only if toggled)
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Plugin / MCP support level").
+				Description("Forward MCP server configs and plugin cache into the sandbox").
+				Options(
+					huh.NewOption("Project — allow MCP servers from .mcp.json", config.PluginLevelProject),
+					huh.NewOption("User — above + ~/.claude.json MCP configs & plugin cache", config.PluginLevelUser),
+					huh.NewOption("All — above + managed-mcp.json (enterprise)", config.PluginLevelAll),
+				).
+				Value(&s.plugins),
+		).Title("Plugins").
+			WithHideFunc(func() bool { return !slices.Contains(enabled, settingPlugins) }),
+
+		// Page 4: Packages (shown only if toggled)
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Extra apt packages").
+				Description("Space-separated packages to install in the sandbox image").
+				Placeholder("e.g. jq ripgrep curl").
+				Value(&s.aptPackages),
+		).Title("Packages").
+			WithHideFunc(func() bool { return !slices.Contains(enabled, settingPackages) }),
+
+		// Page 5: Environment (shown only if toggled)
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Environment variables").
+				Description("KEY=VALUE pairs, comma-separated").
+				Placeholder("e.g. NODE_ENV=development,DEBUG=1").
+				Value(&s.envVars),
+		).Title("Environment").
+			WithHideFunc(func() bool { return !slices.Contains(enabled, settingEnv) }),
+
+		// Page 6: Hooks (shown only if toggled)
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Post-start command").
+				Description("Shell command to run after the sandbox starts (e.g. npm install)").
+				Placeholder("leave empty for none").
+				Value(&s.postStartCommand),
+			huh.NewConfirm().
+				Title("Seed session history").
+				Description("Copy previous Claude sessions into the sandbox for --resume support").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&s.seedHistory),
+		).Title("Hooks & History").
+			WithHideFunc(func() bool { return !slices.Contains(enabled, settingHooks) }),
+	).Run()
+
+	if err != nil {
+		return initSettings{}, err
+	}
+	return s, nil
+}
+
 // buildConfig constructs a config map from selected languages/versions.
 func buildConfig(selections []initSelection) map[string]interface{} {
+	cfg := make(map[string]interface{})
+
 	if len(selections) == 0 {
-		return nil
+		return cfg
 	}
 
 	features := make(map[string]interface{})
@@ -188,13 +313,73 @@ func buildConfig(selections []initSelection) map[string]interface{} {
 
 	sort.Strings(domains)
 
-	cfg := map[string]interface{}{
-		"features": features,
-	}
+	cfg["features"] = features
 	if len(domains) > 0 {
 		cfg["allowDomains"] = domains
 	}
 	return cfg
+}
+
+// mergeSettings merges user-selected settings into the config map.
+// Only sets keys for non-default values to keep the config minimal.
+func mergeSettings(cfg map[string]interface{}, s initSettings) {
+	if cfg == nil {
+		return
+	}
+
+	// Allowed domains: merge with any language-preset domains
+	if s.allowDomains != "" {
+		var extra []string
+		for _, d := range strings.Split(s.allowDomains, ",") {
+			d = strings.TrimSpace(d)
+			if d != "" {
+				extra = append(extra, d)
+			}
+		}
+		if len(extra) > 0 {
+			existing, _ := cfg["allowDomains"].([]string)
+			cfg["allowDomains"] = append(existing, extra...)
+		}
+	}
+
+	if s.ghToken != "" {
+		cfg["ghToken"] = s.ghToken
+	}
+
+	if s.plugins != "" {
+		cfg["plugins"] = s.plugins
+	}
+
+	if s.aptPackages != "" {
+		if pkgs := strings.Fields(s.aptPackages); len(pkgs) > 0 {
+			cfg["apt"] = pkgs
+		}
+	}
+
+	if s.envVars != "" {
+		env := make(map[string]string)
+		for _, pair := range strings.Split(s.envVars, ",") {
+			pair = strings.TrimSpace(pair)
+			if k, v, ok := strings.Cut(pair, "="); ok {
+				k = strings.TrimSpace(k)
+				v = strings.TrimSpace(v)
+				if k != "" {
+					env[k] = v
+				}
+			}
+		}
+		if len(env) > 0 {
+			cfg["env"] = env
+		}
+	}
+
+	if s.postStartCommand != "" {
+		cfg["postStartCommand"] = s.postStartCommand
+	}
+
+	if !s.seedHistory {
+		cfg["seedHistory"] = false
+	}
 }
 
 // writeConfig writes config to disk. If cfg is nil, writes "{}".

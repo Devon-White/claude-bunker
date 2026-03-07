@@ -22,9 +22,11 @@ import (
 // mandatoryEnvKeys lists environment variables that are always set by
 // claude-bunker and must not be overridden by user-defined env vars.
 var mandatoryEnvKeys = map[string]bool{
-	"CLAUDE_CONFIG_DIR":              true,
-	"POWERLEVEL9K_DISABLE_GITSTATUS": true,
-	"DEVCONTAINER":                   true,
+	"CLAUDE_CONFIG_DIR":                          true,
+	"POWERLEVEL9K_DISABLE_GITSTATUS":             true,
+	"DEVCONTAINER":                               true,
+	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":   true,
+	"DISABLE_INSTALLATION_CHECKS":                true,
 }
 
 // FindByLabel finds a container (running or stopped) with the claude-bunker label.
@@ -64,9 +66,10 @@ type CreateAndStartOpts struct {
 	ImageTag      string
 	Workspace     string
 	ProjectCfg    config.ProjectConfig
-	GhToken       string // GitHub fine-grained PAT for git auth (injected via tmpfs)
-	ApiKey        string // Anthropic API key for Claude auth (injected via tmpfs)
-	OAuthToken    string // Claude OAuth token for Claude auth (injected via tmpfs)
+	GhToken       string            // GitHub fine-grained PAT for git auth (injected via tmpfs)
+	ApiKey        string            // Anthropic API key for Claude auth (injected via tmpfs)
+	OAuthToken    string            // Claude OAuth token for Claude auth (injected via tmpfs)
+	ExtraEnv      map[string]string // additional env vars to inject (proxy, plugin flags, etc.)
 }
 
 // CreateAndStart creates and starts a new container with the correct mounts,
@@ -102,8 +105,11 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 		},
 	}
 
-	// Add tmpfs mount for secrets if any auth tokens are provided
-	if opts.GhToken != "" || opts.ApiKey != "" || opts.OAuthToken != "" {
+	// Add tmpfs mount for secrets if any auth tokens or proxy certs are provided
+	hasProxyCerts := opts.ExtraEnv["NODE_EXTRA_CA_CERTS"] != "" ||
+		opts.ExtraEnv["CLAUDE_CODE_CLIENT_CERT"] != "" ||
+		opts.ExtraEnv["CLAUDE_CODE_CLIENT_KEY"] != ""
+	if opts.GhToken != "" || opts.ApiKey != "" || opts.OAuthToken != "" || hasProxyCerts {
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeTmpfs,
 			Target: SecretsDir,
@@ -131,10 +137,19 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 		"CLAUDE_CONFIG_DIR=" + ContainerHome + "/.claude",
 		"POWERLEVEL9K_DISABLE_GITSTATUS=true",
 		"DEVCONTAINER=true",
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+		"DISABLE_INSTALLATION_CHECKS=1",
 	}
 
 	// Merge user-defined env vars (mandatory vars above always win)
 	for k, v := range opts.ProjectCfg.Env {
+		if !mandatoryEnvKeys[k] {
+			env = append(env, k+"="+v)
+		}
+	}
+
+	// Merge extra env vars (mandatory vars always win)
+	for k, v := range opts.ExtraEnv {
 		if !mandatoryEnvKeys[k] {
 			env = append(env, k+"="+v)
 		}
@@ -201,11 +216,17 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	// 1. Git safe directory
+	// 1. Git safe directory + HTTPS rewrite for GitHub
+	// The container has no SSH keys, so rewrite git@github.com: URLs to HTTPS.
+	// This is needed for Claude Code's plugin marketplace (clones via SSH by default).
 	_, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
 		[]string{"git", "config", "--global", "--add", "safe.directory", ContainerWorkspace})
 	if err != nil {
 		return fmt.Errorf("git config: %w", err)
+	}
+	if _, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
+		[]string{"git", "config", "--global", "url.https://github.com/.insteadOf", "git@github.com:"}); err != nil {
+		fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: git insteadOf config: %v\n", err)
 	}
 
 	// 2. Write all firewall domains (builtin + user extras) to temp file.
@@ -339,7 +360,7 @@ func writeSecretFiles(script *strings.Builder, ug string, opts RunPostStartOpts)
 // files and exports them as env vars before exec-ing the wrapped command,
 // ensuring tokens never appear in docker inspect or container env.
 func createAuthWrapper(script *strings.Builder, ug string, opts RunPostStartOpts) {
-	if opts.ApiKey == "" && opts.OAuthToken == "" {
+	if opts.ApiKey == "" && opts.OAuthToken == "" && opts.GhToken == "" {
 		return
 	}
 
@@ -350,6 +371,10 @@ func createAuthWrapper(script *strings.Builder, ug string, opts RunPostStartOpts
 	}
 	if opts.OAuthToken != "" {
 		fmt.Fprintf(script, "export CLAUDE_CODE_OAUTH_TOKEN=\"$(cat %s/oauth_token)\"\n", SecretsDir)
+	}
+	if opts.GhToken != "" {
+		// Export for the GitHub MCP plugin which expects this env var
+		fmt.Fprintf(script, "export GITHUB_PERSONAL_ACCESS_TOKEN=\"$(cat %s/gh_token)\"\n", SecretsDir)
 	}
 	script.WriteString("exec \"$@\"\n")
 	script.WriteString("WRAPPER_EOF\n")

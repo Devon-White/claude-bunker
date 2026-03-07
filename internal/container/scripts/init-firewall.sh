@@ -61,7 +61,7 @@ iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 # refresh-firewall.sh daemon to handle CDN/cloud IP rotation.
 # ---------------------------------------------------------------------------
 IPSET_LIVE="$IPSET_NAME"
-ipset create "$IPSET_LIVE" hash:ip 2>/dev/null || ipset flush "$IPSET_LIVE"
+ipset create "$IPSET_LIVE" hash:net 2>/dev/null || ipset flush "$IPSET_LIVE"
 iptables -A OUTPUT -m set --match-set "$IPSET_LIVE" dst -j ACCEPT
 
 # NOW set default policies to DROP (ipset rule is in place but empty — no

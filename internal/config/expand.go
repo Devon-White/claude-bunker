@@ -93,6 +93,7 @@ func expandProjectConfig(cfg *ProjectConfig) {
 	cfg.Workspace = expandEnvVars(cfg.Workspace)
 	cfg.PostStartCommand = expandEnvVars(cfg.PostStartCommand)
 	cfg.GhToken = expandEnvVars(cfg.GhToken)
+	cfg.Plugins = expandEnvVars(cfg.Plugins)
 
 	for i, v := range cfg.Exclude {
 		cfg.Exclude[i] = expandEnvVars(v)

@@ -22,7 +22,7 @@ IPSET_TMP="${IPSET_NAME}-new"
 
 refresh() {
     # Create temp set, or flush if it lingered from a previous failed run.
-    ipset create "$IPSET_TMP" hash:ip 2>/dev/null || ipset flush "$IPSET_TMP"
+    ipset create "$IPSET_TMP" hash:net 2>/dev/null || ipset flush "$IPSET_TMP"
 
     local count=0
     while IFS= read -r domain || [ -n "$domain" ]; do

@@ -10,6 +10,8 @@ package container
 var builtinDomains = []string{
 	"github.com",
 	"api.github.com",
+	"codeload.github.com",
+	"objects.githubusercontent.com",
 	"api.anthropic.com",
 	"sentry.io",
 	"statsig.anthropic.com",

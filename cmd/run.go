@@ -48,9 +48,10 @@ type runner struct {
 	apiKey        string
 	oauthToken    string
 
-	execID  string // Docker exec ID from ExecInteractive, used for cleanup session detection
-	reused  bool   // true when attaching to an already-running container with matching fingerprints
-	noCache bool   // true when --rebuild is used; passed to Docker build as NoCache
+	execID   string              // Docker exec ID from ExecInteractive, used for cleanup session detection
+	reused   bool                // true when attaching to an already-running container with matching fingerprints
+	noCache  bool                // true when --rebuild is used; passed to Docker build as NoCache
+	proxyCfg sandbox.ProxyConfig // proxy config detected from host env
 
 	// Computed during resolveContainer, reused in buildAndCreate for fingerprint saving.
 	buildInput config.BuildInput
@@ -268,6 +269,8 @@ func (r *runner) loadConfig(flags bunkerFlags) {
 	if r.oauthToken == "" {
 		r.oauthToken = os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
 	}
+
+	r.proxyCfg = sandbox.DetectProxyEnv()
 }
 
 // resolveNaming derives container name, image tag, and extra domains.
@@ -275,6 +278,14 @@ func (r *runner) resolveNaming() {
 	r.containerName = config.ContainerName(r.workspace)
 	r.imageTag = config.ImageTag(r.containerName)
 	r.extraDomains = config.ExtraDomains(r.projectCfg)
+
+	// Add proxy domain to firewall allowlist
+	proxyDomains := sandbox.ExtractProxyDomain(r.proxyCfg)
+	r.extraDomains = append(r.extraDomains, proxyDomains...)
+
+	// Add plugin MCP domains to firewall allowlist
+	pluginDomains := sandbox.ExtractPluginDomains(r.workspace, r.projectCfg.PluginLevel())
+	r.extraDomains = append(r.extraDomains, pluginDomains...)
 }
 
 // resolveContainer checks fingerprints and existing container state to decide
@@ -341,6 +352,13 @@ func (r *runner) buildAndCreate() {
 		info("Starting sandbox...")
 	}
 
+	extraEnv := sandbox.ProxyContainerEnv(r.proxyCfg)
+
+	// When plugins are enabled, allow plugin auto-updates despite DISABLE_NONESSENTIAL_TRAFFIC
+	if r.projectCfg.PluginLevel() != "" {
+		extraEnv["FORCE_AUTOUPDATE_PLUGINS"] = "true"
+	}
+
 	id, err := container.CreateAndStart(r.ctx, r.cli, container.CreateAndStartOpts{
 		ContainerName: r.containerName,
 		ImageTag:      r.imageTag,
@@ -349,6 +367,7 @@ func (r *runner) buildAndCreate() {
 		GhToken:       r.ghToken,
 		ApiKey:        r.apiKey,
 		OAuthToken:    r.oauthToken,
+		ExtraEnv:      extraEnv,
 	})
 	if err != nil {
 		die("Failed to start sandbox: " + err.Error())
@@ -363,6 +382,17 @@ func (r *runner) buildAndCreate() {
 		OAuthToken:       r.oauthToken,
 	}); err != nil {
 		die("Post-start failed: " + err.Error())
+	}
+
+	// Inject proxy certificates if configured
+	if r.proxyCfg.HasCerts() {
+		var log io.Writer = os.Stderr
+		if verbosity < 0 {
+			log = io.Discard
+		}
+		if err := sandbox.InjectProxyCerts(r.ctx, r.cli, r.containerID, r.proxyCfg, log); err != nil {
+			warn("Failed to inject proxy certs: " + err.Error())
+		}
 	}
 
 	if err := config.SaveCombinedFingerprint(r.buildInput, r.containerName); err != nil {
@@ -384,7 +414,7 @@ func (r *runner) seedSettings() {
 		log = io.Discard
 	}
 
-	if err := sandbox.SeedSettings(r.ctx, r.cli, r.containerID, r.workspace, r.extraDomains, log); err != nil {
+	if err := sandbox.SeedSettings(r.ctx, r.cli, r.containerID, r.workspace, r.extraDomains, r.projectCfg.PluginLevel(), log); err != nil {
 		warn("Failed to seed settings: " + err.Error())
 	}
 	if r.projectCfg.ShouldSeedHistory() {
@@ -413,7 +443,7 @@ func (r *runner) setupSignals() {
 // exec runs the command interactively in the container and returns the exit code.
 func (r *runner) exec(execCmd string, passedArgs []string) int {
 	var execCommand []string
-	if execCmd == "claude" && (r.apiKey != "" || r.oauthToken != "") {
+	if execCmd == "claude" && (r.apiKey != "" || r.oauthToken != "" || r.ghToken != "") {
 		execCommand = append([]string{container.AuthWrapperPath, execCmd}, passedArgs...)
 	} else {
 		execCommand = append([]string{execCmd}, passedArgs...)

@@ -21,10 +21,15 @@ import (
 //
 // The log writer controls where informational output is sent; pass
 // io.Discard to suppress it.
-func SeedSettings(ctx context.Context, cli *client.Client, containerID, workspace string, extraDomains []string, logW io.Writer) error {
+func SeedSettings(ctx context.Context, cli *client.Client, containerID, workspace string, extraDomains []string, pluginLevel string, logW io.Writer) error {
+	// Seed plugin files/configs before managed-settings so MCP configs are in place.
+	if err := SeedPlugins(ctx, cli, containerID, workspace, pluginLevel, logW); err != nil {
+		fmt.Fprintf(logW, "[claude-bunker] WARNING: seeding plugins: %v\n", err)
+	}
+
 	// Write managed-settings.json with full sandbox config including domains.
 	// This has the highest precedence in Claude Code and cannot be overridden.
-	if err := writeManagedSettings(ctx, cli, containerID, extraDomains, logW); err != nil {
+	if err := writeManagedSettings(ctx, cli, containerID, extraDomains, pluginLevel, logW); err != nil {
 		return fmt.Errorf("managed-settings: %w", err)
 	}
 
@@ -66,7 +71,7 @@ func SeedSettings(ctx context.Context, cli *client.Client, containerID, workspac
 //
 // managed-settings.json has the highest precedence in Claude Code — it cannot
 // be overridden by settings.json, settings.local.json, or the /sandbox command.
-func writeManagedSettings(ctx context.Context, cli *client.Client, containerID string, extraDomains []string, logW io.Writer) error {
+func writeManagedSettings(ctx context.Context, cli *client.Client, containerID string, extraDomains []string, pluginLevel string, logW io.Writer) error {
 	// Build the sandbox domain list from the canonical builtin list plus
 	// sandbox-only wildcards (e.g. *.github.com) and user extras.
 	domains := container.BuiltinDomains()
@@ -78,10 +83,18 @@ func writeManagedSettings(ctx context.Context, cli *client.Client, containerID s
 			"enabled":                   true,
 			"allowUnsandboxedCommands":  false,
 			"enableWeakerNestedSandbox": true,
+			"writableRoots": []string{
+				container.ContainerHome + "/.cache",
+			},
 			"network": map[string]interface{}{
 				"allowedDomains": domains,
 			},
 		},
+	}
+
+	// When plugins are enabled, auto-allow project MCP servers
+	if pluginLevel != "" {
+		settings["enableAllProjectMcpServers"] = true
 	}
 
 	data, err := json.MarshalIndent(settings, "", "  ")

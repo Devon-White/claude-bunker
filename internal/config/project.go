@@ -12,15 +12,45 @@ import (
 // ProjectConfig represents the unified claude-bunker configuration.
 // Location: .claude/.claude-bunker/config.json
 type ProjectConfig struct {
-	Workspace         string                            `json:"workspace"`
-	Exclude           []string                          `json:"exclude"`
-	AllowDomains      []string                          `json:"allowDomains"`
-	Features          map[string]map[string]interface{} `json:"features"`
-	Apt               []string                          `json:"apt"`
-	Env               map[string]string                 `json:"env"`
-	PostStartCommand string `json:"postStartCommand"`
-	GhToken           string                            `json:"ghToken,omitempty"`
-	SeedHistory       *bool                             `json:"seedHistory,omitempty"`
+	Workspace        string                            `json:"workspace"`
+	Exclude          []string                          `json:"exclude"`
+	AllowDomains     []string                          `json:"allowDomains"`
+	Features         map[string]map[string]interface{} `json:"features"`
+	Apt              []string                          `json:"apt"`
+	Env              map[string]string                 `json:"env"`
+	PostStartCommand string                            `json:"postStartCommand"`
+	GhToken          string                            `json:"ghToken,omitempty"`
+	SeedHistory      *bool                             `json:"seedHistory,omitempty"`
+	Plugins          string                            `json:"plugins,omitempty"`
+}
+
+// Plugin level constants.
+const (
+	PluginLevelProject = "project"
+	PluginLevelUser    = "user"
+	PluginLevelAll     = "all"
+)
+
+// pluginLevelOrder maps plugin levels to their numeric rank for AtLeast comparisons.
+var pluginLevelOrder = map[string]int{
+	PluginLevelProject: 1,
+	PluginLevelUser:    2,
+	PluginLevelAll:     3,
+}
+
+// PluginLevel returns the validated plugin level string.
+// Returns "" if plugins are disabled (false, omitted, or invalid value).
+func (c ProjectConfig) PluginLevel() string {
+	if _, ok := pluginLevelOrder[c.Plugins]; ok {
+		return c.Plugins
+	}
+	return ""
+}
+
+// PluginLevelAtLeast returns true if level is at least threshold.
+// Returns false if level is empty (disabled).
+func PluginLevelAtLeast(level, threshold string) bool {
+	return pluginLevelOrder[level] >= pluginLevelOrder[threshold]
 }
 
 // ShouldSeedHistory returns whether session history should be seeded.
@@ -64,42 +94,43 @@ func LoadProjectConfig(workspace string) (ProjectConfig, error) {
 	return cfg, nil
 }
 
+// IsValidDomain checks whether a single domain pattern is valid for firewall
+// allowlisting. It rejects empty strings, malformed wildcards, patterns with
+// fewer than 2 segments, and empty segments.
+func IsValidDomain(d string) bool {
+	if d == "" {
+		return false
+	}
+	if strings.HasPrefix(d, "*") && !strings.HasPrefix(d, "*.") {
+		return false
+	}
+	check := d
+	if strings.HasPrefix(check, "*.") {
+		check = check[2:]
+	}
+	segments := strings.Split(check, ".")
+	if len(segments) < 2 {
+		return false
+	}
+	for _, seg := range segments {
+		if seg == "" {
+			return false
+		}
+	}
+	return true
+}
+
 // validateDomains checks that domain patterns in allowDomains are reasonable.
-// It rejects empty strings, patterns with fewer than 2 domain segments
-// (which would be overly broad, e.g. "*.com", "*.org", "*"), and malformed
-// wildcard prefixes. Single-segment domains like "localhost" are intentionally
-// rejected — the firewall resolves domains to IPs, and single-segment names
-// are too broad for a security allowlist.
 func validateDomains(domains []string) error {
 	for _, d := range domains {
-		if d == "" {
-			return fmt.Errorf("allowDomains: empty domain pattern")
-		}
-
-		// Wildcards must use the "*.domain" form (e.g. "*.github.com").
-		// Reject malformed wildcards like "*github.com" (missing dot).
-		if strings.HasPrefix(d, "*") && !strings.HasPrefix(d, "*.") {
-			return fmt.Errorf("allowDomains: pattern %q has invalid wildcard (use %q instead)", d, "*."+d[1:])
-		}
-
-		// Strip leading wildcard prefix for segment counting
-		check := d
-		if strings.HasPrefix(check, "*.") {
-			check = check[2:]
-		}
-
-		// After stripping "*.", we need at least 2 segments (e.g. "example.com")
-		// to prevent overly broad patterns like "*.com"
-		segments := strings.Split(check, ".")
-		if len(segments) < 2 {
-			return fmt.Errorf("allowDomains: pattern %q is too broad (need at least 2 domain segments)", d)
-		}
-
-		// Reject segments that are empty (e.g. "foo..bar")
-		for _, seg := range segments {
-			if seg == "" {
-				return fmt.Errorf("allowDomains: pattern %q contains empty segment", d)
+		if !IsValidDomain(d) {
+			if d == "" {
+				return fmt.Errorf("allowDomains: empty domain pattern")
 			}
+			if strings.HasPrefix(d, "*") && !strings.HasPrefix(d, "*.") {
+				return fmt.Errorf("allowDomains: pattern %q has invalid wildcard (use %q instead)", d, "*."+d[1:])
+			}
+			return fmt.Errorf("allowDomains: pattern %q is too broad or contains empty segments", d)
 		}
 	}
 	return nil
