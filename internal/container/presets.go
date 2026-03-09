@@ -20,7 +20,6 @@ type LanguagePreset struct {
 	VersionOption  string   // Feature option name for language version ("version")
 	Domains        []string // Package manager domains to allowlist
 	CommonVersions []string // Fallback versions used when the API is unreachable
-	DefaultVersion string   // Fallback if version selection is skipped
 	EOLProduct     string   // endoflife.date product name ("nodejs", "python", …)
 }
 
@@ -32,7 +31,6 @@ var Presets = []LanguagePreset{
 		VersionOption:  "version",
 		Domains:        []string{"registry.npmjs.org"},
 		CommonVersions: []string{"22", "20", "18"},
-		DefaultVersion: "lts",
 		EOLProduct:     "nodejs",
 	},
 	{
@@ -41,7 +39,6 @@ var Presets = []LanguagePreset{
 		VersionOption:  "version",
 		Domains:        []string{"pypi.org", "files.pythonhosted.org"},
 		CommonVersions: []string{"3.13", "3.12", "3.11", "3.10"},
-		DefaultVersion: "latest",
 		EOLProduct:     "python",
 	},
 	{
@@ -50,7 +47,6 @@ var Presets = []LanguagePreset{
 		VersionOption:  "version",
 		Domains:        []string{"proxy.golang.org", "sum.golang.org", "storage.googleapis.com"},
 		CommonVersions: []string{"1.24", "1.23", "1.22"},
-		DefaultVersion: "latest",
 		EOLProduct:     "go",
 	},
 	{
@@ -59,7 +55,6 @@ var Presets = []LanguagePreset{
 		VersionOption:  "version",
 		Domains:        []string{"crates.io", "static.crates.io", "index.crates.io"},
 		CommonVersions: []string{"latest", "1.84", "1.83", "1.82"},
-		DefaultVersion: "latest",
 		EOLProduct:     "rust",
 	},
 	{
@@ -68,7 +63,6 @@ var Presets = []LanguagePreset{
 		VersionOption:  "version",
 		Domains:        []string{"repo1.maven.org", "repo.maven.apache.org", "plugins.gradle.org", "services.gradle.org"},
 		CommonVersions: []string{"21", "17", "11"},
-		DefaultVersion: "lts",
 		EOLProduct:     "eclipse-temurin",
 	},
 	{
@@ -77,7 +71,6 @@ var Presets = []LanguagePreset{
 		VersionOption:  "version",
 		Domains:        []string{"api.nuget.org", "dotnetcli.azureedge.net"},
 		CommonVersions: []string{"9.0", "8.0", "7.0"},
-		DefaultVersion: "latest",
 		EOLProduct:     "dotnet",
 	},
 	{
@@ -86,7 +79,6 @@ var Presets = []LanguagePreset{
 		VersionOption:  "version",
 		Domains:        []string{"rubygems.org", "index.rubygems.org"},
 		CommonVersions: []string{"3.4", "3.3", "3.2"},
-		DefaultVersion: "latest",
 		EOLProduct:     "ruby",
 	},
 	{
@@ -95,7 +87,6 @@ var Presets = []LanguagePreset{
 		VersionOption:  "version",
 		Domains:        []string{"getcomposer.org", "repo.packagist.org", "packagist.org"},
 		CommonVersions: []string{"8.4", "8.3", "8.2"},
-		DefaultVersion: "latest",
 		EOLProduct:     "php",
 	},
 }

@@ -9,12 +9,21 @@ IPSET_NAME="bunker-allowed"
 
 # resolve_domain: Resolves a domain to A-record IPv4 addresses.
 # Outputs one IP per line on stdout. Empty output means resolution failed.
+# Strategy: try dig first (faster, authoritative); fall back to getent so
+# that /etc/hosts entries and systems without dig are still handled.
 resolve_domain() {
     local domain="$1"
-    {
-        dig +noall +answer +tries=2 +time=3 A "$domain" 2>/dev/null | awk '$4 == "A" {print $5}'
-        getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}'
-    } | sort -u
+    local ips=""
+
+    if command -v dig &>/dev/null; then
+        ips=$(dig +noall +answer +tries=2 +time=3 A "$domain" 2>/dev/null | awk '$4 == "A" {print $5}')
+    fi
+
+    if [ -z "$ips" ]; then
+        ips=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}')
+    fi
+
+    [ -n "$ips" ] && echo "$ips" | sort -u
 }
 
 # is_ipv4: Returns 0 if the argument is a valid IPv4 address (each octet 0-255).

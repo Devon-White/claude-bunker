@@ -48,54 +48,58 @@ func runPrune(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func pruneVolumes(ctx context.Context, cli *dockerclient.Client, force, all bool) {
-	volumes, err := container.ListBunkerVolumesDetailed(ctx, cli)
+// pruneSpec defines the callbacks needed to list, label, and remove a resource type.
+type pruneSpec[T any] struct {
+	// resourceName is the plural noun shown in messages (e.g. "volume", "image").
+	resourceName string
+	// list fetches all resources from Docker.
+	list func(ctx context.Context, cli *dockerclient.Client) ([]T, error)
+	// groups partitions items into labelled groups for multi-select.
+	// Each group has a display label and a slice of items.
+	// For flat lists, return one group per item.
+	groups func(items []T) (labels []string, grouped [][]T)
+	// label returns the display string for a single item (used in confirm/verbose).
+	label func(item T) string
+	// remove deletes a single resource.
+	remove func(ctx context.Context, cli *dockerclient.Client, item T) error
+}
+
+// pruneResources implements the generic list -> select -> confirm -> remove pattern.
+func pruneResources[T any](ctx context.Context, cli *dockerclient.Client, force, all bool, spec pruneSpec[T]) {
+	items, err := spec.list(ctx, cli)
 	if err != nil {
-		warn("Failed to list volumes: " + err.Error())
+		warn("Failed to list " + spec.resourceName + "s: " + err.Error())
 		return
 	}
 
-	if len(volumes) == 0 {
-		info("No claude-bunker volumes found.")
+	if len(items) == 0 {
+		info("No claude-bunker " + spec.resourceName + "s found.")
 		return
 	}
 
-	// Group volumes by project
-	projects := map[string][]container.BunkerVolume{}
-	var projectOrder []string
-	for _, v := range volumes {
-		if _, seen := projects[v.Project]; !seen {
-			projectOrder = append(projectOrder, v.Project)
-		}
-		projects[v.Project] = append(projects[v.Project], v)
-	}
+	groupLabels, grouped := spec.groups(items)
 
-	info(fmt.Sprintf("Found %d volume(s) across %d project(s).", len(volumes), len(projectOrder)))
+	info(fmt.Sprintf("Found %d %s(s).", len(items), spec.resourceName))
 
 	var selectedIndices []int
 
-	if all || len(projectOrder) == 1 {
-		// Select all projects
-		for i := range projectOrder {
+	if all || len(groupLabels) == 1 {
+		for i := range groupLabels {
 			selectedIndices = append(selectedIndices, i)
 		}
 	} else if !isTTY() {
-		// Non-interactive: require --all or --force
 		warn("Non-interactive terminal detected. Use --all to select all, or --force to skip prompts.")
 		return
 	} else {
-		// Build huh options for projects
-		options := make([]huh.Option[int], len(projectOrder))
-		for i, project := range projectOrder {
-			vols := projects[project]
-			label := fmt.Sprintf("%s (%d volume(s))", project, len(vols))
-			options[i] = huh.NewOption(label, i)
+		options := make([]huh.Option[int], len(groupLabels))
+		for i, lbl := range groupLabels {
+			options[i] = huh.NewOption(lbl, i)
 		}
 
 		err := huh.NewForm(
 			huh.NewGroup(
 				huh.NewMultiSelect[int]().
-					Title("Select projects to remove volumes from").
+					Title("Select " + spec.resourceName + "s to remove").
 					Description("Space to toggle, Enter to confirm").
 					Options(options...).
 					Value(&selectedIndices),
@@ -112,9 +116,9 @@ func pruneVolumes(ctx context.Context, cli *dockerclient.Client, force, all bool
 		}
 	}
 
-	var toRemove []container.BunkerVolume
+	var toRemove []T
 	for _, idx := range selectedIndices {
-		toRemove = append(toRemove, projects[projectOrder[idx]]...)
+		toRemove = append(toRemove, grouped[idx]...)
 	}
 
 	if len(toRemove) == 0 {
@@ -123,103 +127,70 @@ func pruneVolumes(ctx context.Context, cli *dockerclient.Client, force, all bool
 	}
 
 	if !force {
-		if !confirmAction(fmt.Sprintf("Remove %d volume(s)?", len(toRemove))) {
+		if !confirmAction(fmt.Sprintf("Remove %d %s(s)?", len(toRemove), spec.resourceName)) {
 			info("Aborted.")
 			return
 		}
 	}
 
 	removed := 0
-	for _, v := range toRemove {
-		if err := container.RemoveVolume(ctx, cli, v.Name); err != nil {
-			warn(fmt.Sprintf("Could not remove %s (may be in use).", v.Name))
+	for _, item := range toRemove {
+		if err := spec.remove(ctx, cli, item); err != nil {
+			warn(fmt.Sprintf("Could not remove %s (may be in use).", spec.label(item)))
 		} else {
-			verbose("Removed: " + v.Name)
+			verbose("Removed: " + spec.label(item))
 			removed++
 		}
 	}
 
-	success(fmt.Sprintf("Pruned %d volume(s).", removed))
+	success(fmt.Sprintf("Pruned %d %s(s).", removed, spec.resourceName))
+}
+
+func pruneVolumes(ctx context.Context, cli *dockerclient.Client, force, all bool) {
+	pruneResources(ctx, cli, force, all, pruneSpec[container.BunkerVolume]{
+		resourceName: "volume",
+		list:         container.ListBunkerVolumesDetailed,
+		groups: func(items []container.BunkerVolume) ([]string, [][]container.BunkerVolume) {
+			projects := map[string][]container.BunkerVolume{}
+			var projectOrder []string
+			for _, v := range items {
+				if _, seen := projects[v.Project]; !seen {
+					projectOrder = append(projectOrder, v.Project)
+				}
+				projects[v.Project] = append(projects[v.Project], v)
+			}
+			labels := make([]string, len(projectOrder))
+			grouped := make([][]container.BunkerVolume, len(projectOrder))
+			for i, p := range projectOrder {
+				labels[i] = fmt.Sprintf("%s (%d volume(s))", p, len(projects[p]))
+				grouped[i] = projects[p]
+			}
+			return labels, grouped
+		},
+		label:  func(v container.BunkerVolume) string { return v.Name },
+		remove: func(ctx context.Context, cli *dockerclient.Client, v container.BunkerVolume) error {
+			return container.RemoveVolume(ctx, cli, v.Name)
+		},
+	})
 }
 
 func pruneImages(ctx context.Context, cli *dockerclient.Client, force, all bool) {
-	images, err := container.ListBunkerImages(ctx, cli)
-	if err != nil {
-		warn("Failed to list images: " + err.Error())
-		return
-	}
-
-	if len(images) == 0 {
-		info("No claude-bunker images found.")
-		return
-	}
-
-	info(fmt.Sprintf("Found %d claude-bunker image(s).", len(images)))
-
-	var selectedIndices []int
-
-	if all || len(images) == 1 {
-		for i := range images {
-			selectedIndices = append(selectedIndices, i)
-		}
-	} else if !isTTY() {
-		warn("Non-interactive terminal detected. Use --all to select all, or --force to skip prompts.")
-		return
-	} else {
-		// Build huh options for images
-		options := make([]huh.Option[int], len(images))
-		for i, img := range images {
-			sizeMB := float64(img.Size) / 1024 / 1024
-			label := fmt.Sprintf("%s (%.0f MB)", img.Tag, sizeMB)
-			options[i] = huh.NewOption(label, i)
-		}
-
-		err := huh.NewForm(
-			huh.NewGroup(
-				huh.NewMultiSelect[int]().
-					Title("Select images to remove").
-					Description("Space to toggle, Enter to confirm").
-					Options(options...).
-					Value(&selectedIndices),
-			),
-		).Run()
-
-		if err != nil {
-			if errors.Is(err, huh.ErrUserAborted) {
-				info("Aborted.")
-				return
+	pruneResources(ctx, cli, force, all, pruneSpec[container.BunkerImage]{
+		resourceName: "image",
+		list:         container.ListBunkerImages,
+		groups: func(items []container.BunkerImage) ([]string, [][]container.BunkerImage) {
+			labels := make([]string, len(items))
+			grouped := make([][]container.BunkerImage, len(items))
+			for i, img := range items {
+				sizeMB := float64(img.Size) / 1024 / 1024
+				labels[i] = fmt.Sprintf("%s (%.0f MB)", img.Tag, sizeMB)
+				grouped[i] = []container.BunkerImage{img}
 			}
-			warn("Selection failed: " + err.Error())
-			return
-		}
-	}
-
-	var toRemove []container.BunkerImage
-	for _, idx := range selectedIndices {
-		toRemove = append(toRemove, images[idx])
-	}
-
-	if len(toRemove) == 0 {
-		info("Nothing to remove.")
-		return
-	}
-
-	if !force {
-		if !confirmAction(fmt.Sprintf("Remove %d image(s)?", len(toRemove))) {
-			info("Aborted.")
-			return
-		}
-	}
-
-	removed := 0
-	for _, img := range toRemove {
-		if err := container.RemoveImageByTag(ctx, cli, img.Tag); err != nil {
-			warn(fmt.Sprintf("Could not remove %s (may be in use).", img.Tag))
-		} else {
-			verbose("Removed: " + img.Tag)
-			removed++
-		}
-	}
-
-	success(fmt.Sprintf("Pruned %d image(s).", removed))
+			return labels, grouped
+		},
+		label:  func(img container.BunkerImage) string { return img.Tag },
+		remove: func(ctx context.Context, cli *dockerclient.Client, img container.BunkerImage) error {
+			return container.RemoveImageByTag(ctx, cli, img.Tag)
+		},
+	})
 }

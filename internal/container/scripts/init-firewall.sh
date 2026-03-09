@@ -37,11 +37,11 @@ if ! echo "$SANITY_OUTPUT" | grep -q -- "-P OUTPUT DROP"; then
     exit 1
 fi
 
-# Allow outbound DNS (matches upstream Claude Code devcontainer).
-# The IP allowlist already prevents connections to unauthorized destinations,
-# making destination-restricted DNS unnecessary in a devcontainer context.
-iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+# Allow outbound DNS to Docker's embedded resolver only (127.0.0.11).
+# Restricting to the Docker resolver prevents DNS tunneling exfiltration to
+# attacker-controlled nameservers while preserving all normal name resolution.
+iptables -A OUTPUT -p udp -d 127.0.0.11 --dport 53 -j ACCEPT
+iptables -A OUTPUT -p tcp -d 127.0.0.11 --dport 53 -j ACCEPT
 
 # Allow localhost
 iptables -A INPUT -i lo -j ACCEPT

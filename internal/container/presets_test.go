@@ -28,9 +28,6 @@ func TestPresetsIntegrity(t *testing.T) {
 		if len(p.CommonVersions) == 0 {
 			t.Errorf("Presets[%d] (%s): CommonVersions is empty", i, p.Label)
 		}
-		if p.DefaultVersion == "" {
-			t.Errorf("Presets[%d] (%s): DefaultVersion is empty", i, p.Label)
-		}
 		if p.EOLProduct == "" {
 			t.Errorf("Presets[%d] (%s): EOLProduct is empty", i, p.Label)
 		}

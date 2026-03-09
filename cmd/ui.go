@@ -65,6 +65,7 @@ func die(msg string) {
 		msg,
 	)
 	if activeRunner != nil {
+		activeRunner.cancel()
 		activeRunner.cleanup()
 		if activeRunner.cli != nil {
 			activeRunner.cli.Close()

@@ -41,20 +41,7 @@ func StartResizeListener(ctx context.Context, cli *client.Client, execID string)
 	}()
 
 	// Also do a resize after a short delay to handle initial sizing
-	go func() {
-		select {
-		case <-time.After(100 * time.Millisecond):
-			w, h := GetSize()
-			if w > 0 && h > 0 {
-				_ = cli.ContainerExecResize(ctx, execID, container.ResizeOptions{
-					Width:  uint(w),
-					Height: uint(h),
-				})
-			}
-		case <-done:
-		case <-ctx.Done():
-		}
-	}()
+	go delayedResize(ctx, cli, execID, done)
 
 	return func() {
 		close(done)
