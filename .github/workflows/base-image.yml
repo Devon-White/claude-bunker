@@ -1,13 +1,15 @@
 name: Build Base Image
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
         description: "Version tag (e.g. 0.3.0)"
         required: true
+      prerelease:
+        description: "Is this a prerelease? (true/false)"
+        required: false
+        default: "false"
 
 permissions:
   contents: read
@@ -32,18 +34,10 @@ jobs:
       - name: Determine version tag
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            # Strip 'v' prefix from release tag
-            TAG="${{ github.event.release.tag_name }}"
-            TAG="${TAG#v}"
-            # Don't tag pre-releases as latest
-            if [ "${{ github.event.release.prerelease }}" = "true" ]; then
-              echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            TAG="${{ github.event.inputs.tag }}"
+          echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event.inputs.prerelease }}" = "true" ]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Generate Dockerfile and build context
         run: |

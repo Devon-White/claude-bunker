@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   release:
@@ -22,6 +23,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Extract version tag
+        id: version
+        run: echo "tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -29,3 +34,11 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger base image build
+        run: |
+          gh workflow run base-image.yml \
+            -f tag=${{ steps.version.outputs.tag }} \
+            -f prerelease=${{ contains(steps.version.outputs.tag, '-') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
