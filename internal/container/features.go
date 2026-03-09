@@ -144,6 +144,11 @@ func extractImage(img v1.Image, destDir string) error {
 	return extractTar(reader, destDir)
 }
 
+// maxExtractFileSize is the maximum allowed size for a single file extracted
+// from a tar archive. This guards against tar-bomb attacks from malicious OCI
+// feature layers.
+const maxExtractFileSize = 500 * 1024 * 1024 // 500 MB
+
 // extractTar extracts a tar stream to destDir.
 func extractTar(r io.Reader, destDir string) error {
 	tr := tar.NewReader(r)
@@ -171,6 +176,9 @@ func extractTar(r io.Reader, destDir string) error {
 				return err
 			}
 		case tar.TypeReg:
+			if hdr.Size > maxExtractFileSize {
+				return fmt.Errorf("tar entry %q size %d exceeds maximum allowed size %d", hdr.Name, hdr.Size, maxExtractFileSize)
+			}
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return err
 			}
@@ -178,7 +186,7 @@ func extractTar(r io.Reader, destDir string) error {
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(f, tr); err != nil {
+			if _, err := io.Copy(f, io.LimitReader(tr, maxExtractFileSize+1)); err != nil {
 				f.Close()
 				return err
 			}

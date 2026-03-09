@@ -130,6 +130,26 @@ type CreateAndStartOpts struct {
 	ExtraEnv      map[string]string // additional env vars to inject (proxy, plugin flags, etc.)
 }
 
+// containerDotfiles are dotfiles that Claude Code's bubblewrap sandbox creates
+// in the working directory. We bind-mount /dev/null over each one so they
+// don't leak to the host via the workspace bind mount.
+var containerDotfiles = []string{
+	".bash_profile",
+	".bashrc",
+	".gitconfig",
+	".profile",
+	".ripgreprc",
+	".zprofile",
+	".zshrc",
+}
+
+// containerDotDirs are directories that tools/IDEs may create in the workspace.
+// Tmpfs mounts absorb these so they stay container-local.
+var containerDotDirs = []string{
+	".vscode",
+	".idea",
+}
+
 // CreateAndStart creates and starts a new container with the correct mounts,
 // caps, and environment.
 func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStartOpts) (string, error) {
@@ -177,6 +197,27 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 			TmpfsOptions: &mount.TmpfsOptions{
 				Mode: 0700,
 			},
+		})
+	}
+
+	// Absorb container-generated dotfiles so they don't leak to the host
+	// via the workspace bind mount. Claude Code's bubblewrap sandbox creates
+	// empty read-only dotfiles in the working directory for isolation; since
+	// WORKDIR is /workspace (the host project), they would pollute the host.
+	// Bind-mounting /dev/null over file paths and tmpfs over directories
+	// ensures writes stay inside the container.
+	for _, name := range containerDotfiles {
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   "/dev/null",
+			Target:   ContainerWorkspace + "/" + name,
+			ReadOnly: true,
+		})
+	}
+	for _, name := range containerDotDirs {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeTmpfs,
+			Target: ContainerWorkspace + "/" + name,
 		})
 	}
 
@@ -279,14 +320,16 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	// 1. Git safe directory + HTTPS rewrite for GitHub
-	// The container has no SSH keys, so rewrite git@github.com: URLs to HTTPS.
-	// This is needed for Claude Code's plugin marketplace (clones via SSH by default).
+	// 1. Git safe directory (required for sandbox workspace access).
 	_, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
 		[]string{"git", "config", "--global", "--add", "safe.directory", ContainerWorkspace})
 	if err != nil {
 		return fmt.Errorf("git config: %w", err)
 	}
+
+	// HTTPS rewrite for GitHub — the container has no SSH keys, so rewrite
+	// git@github.com: URLs to HTTPS for Claude Code's plugin marketplace.
+	// Non-fatal: only affects SSH-based plugin installs.
 	if _, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
 		[]string{"git", "config", "--global", "url.https://github.com/.insteadOf", "git@github.com:"}); err != nil {
 		fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: git insteadOf config: %v\n", err)
@@ -300,6 +343,14 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 	if err := CopyContentToContainer(ctx, cli, containerID,
 		[]byte(strings.Join(allDomains, "\n")), DomainsFilePath); err != nil {
 		return fmt.Errorf("writing firewall domains: %w", err)
+	}
+
+	// 2b. Lock down the domains file so the container user cannot modify it.
+	// Without this, a prompt injection could append domains to bypass the firewall
+	// when the refresh daemon re-reads the file.
+	if _, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
+		[]string{"sh", "-c", "chown root:root " + DomainsFilePath + " && chmod 444 " + DomainsFilePath}); err != nil {
+		return fmt.Errorf("locking domains file: %w", err)
 	}
 
 	// 3. Run firewall init (exec runs as root, no sudo needed).

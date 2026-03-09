@@ -25,14 +25,8 @@ var (
 	tmuxConf              = mustReadEmbedded("tmux.conf")
 )
 
-// InitFirewallScript returns a copy of the embedded init-firewall.sh content.
-func InitFirewallScript() []byte { return append([]byte(nil), initFirewallScript...) }
-
-// RefreshFirewallScript returns a copy of the embedded refresh-firewall.sh content.
-func RefreshFirewallScript() []byte { return append([]byte(nil), refreshFirewallScript...) }
-
-// TmuxConf returns a copy of the embedded tmux.conf content.
-func TmuxConf() []byte { return append([]byte(nil), tmuxConf...) }
+// copyScript returns a mutable copy of a cached script.
+func copyScript(src []byte) []byte { return append([]byte(nil), src...) }
 
 // BuildContextFile describes an embedded file that is part of the Docker build
 // context. This is the single source of truth — buildContextTar, dumpDockerfile,
@@ -48,9 +42,9 @@ type BuildContextFile struct {
 // to the tar archive, file dump, standalone genbuild tool, and fingerprinting.
 func BuildContextScripts() []BuildContextFile {
 	return []BuildContextFile{
-		{"firewall-common.sh", append([]byte(nil), commonFirewallScript...), 0755},
-		{"init-firewall.sh", InitFirewallScript(), 0755},
-		{"refresh-firewall.sh", RefreshFirewallScript(), 0755},
-		{"tmux.conf", TmuxConf(), 0644},
+		{"firewall-common.sh", copyScript(commonFirewallScript), 0755},
+		{"init-firewall.sh", copyScript(initFirewallScript), 0755},
+		{"refresh-firewall.sh", copyScript(refreshFirewallScript), 0755},
+		{"tmux.conf", copyScript(tmuxConf), 0644},
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
@@ -42,7 +41,7 @@ func buildDirTar(hostDir string, skip func(relPath string, isDir bool) bool) (*b
 		if relErr != nil {
 			return nil
 		}
-		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		relPath = filepath.ToSlash(relPath)
 
 		if relPath == "." {
 			return nil
@@ -150,7 +149,7 @@ func CopyDirToContainer(ctx context.Context, cli *client.Client, containerID, ho
 		return nil
 	}
 
-	containerDir = strings.ReplaceAll(containerDir, "\\", "/")
+	containerDir = filepath.ToSlash(containerDir)
 	return cli.CopyToContainer(ctx, containerID, containerDir, buf, container.CopyToContainerOptions{})
 }
 
@@ -170,7 +169,7 @@ func CopyDirToContainerExec(ctx context.Context, cli *client.Client, containerID
 		return nil
 	}
 
-	containerDir = strings.ReplaceAll(containerDir, "\\", "/")
+	containerDir = filepath.ToSlash(containerDir)
 	return execWithStdin(ctx, cli, containerID, RootUser,
 		[]string{"tar", "xf", "-", "-C", containerDir}, buf.Bytes())
 }
@@ -181,9 +180,14 @@ func CopyDirToContainerExec(ctx context.Context, cli *client.Client, containerID
 //
 // For small payloads the base64 data is passed as a command-line argument. For
 // large payloads it is piped via stdin to avoid Linux's MAX_ARG_STRLEN limit.
+//
+// Future optimization: callers that invoke CopyContentToContainer multiple times
+// in sequence (e.g. writing several config files) could be batched into a single
+// exec using a tar stream piped via stdin. This would require a new tar-pipe API
+// that accepts multiple (content, path) pairs and unpacks them in one shot.
 func CopyContentToContainer(ctx context.Context, cli *client.Client, containerID string, content []byte, containerPath string) error {
 	encoded := base64.StdEncoding.EncodeToString(content)
-	containerPath = strings.ReplaceAll(containerPath, "\\", "/")
+	containerPath = filepath.ToSlash(containerPath)
 
 	if len(content) <= maxArgSize {
 		_, err := ExecNonInteractive(ctx, cli, containerID, RootUser,

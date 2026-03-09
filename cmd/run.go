@@ -56,6 +56,10 @@ type runner struct {
 	// Computed during resolveContainer, reused in buildAndCreate for fingerprint saving.
 	buildInput config.BuildInput
 	fpResult   config.FingerprintResult
+
+	// Cached build artifacts from resolveContainer, passed to BuildImage to avoid recomputation.
+	cachedDockerfile string
+	cachedScripts    []container.BuildContextFile
 }
 
 // cleanup stops and removes the container. Safe to call multiple times
@@ -298,14 +302,15 @@ func (r *runner) resolveNaming() {
 // resolveContainer checks fingerprints and existing container state to decide
 // whether to reuse, recreate, or rebuild.
 func (r *runner) resolveContainer() {
-	scripts := container.BuildContextScripts()
-	scriptMap := make(map[string][]byte, len(scripts))
-	for _, f := range scripts {
+	r.cachedScripts = container.BuildContextScripts()
+	scriptMap := make(map[string][]byte, len(r.cachedScripts))
+	for _, f := range r.cachedScripts {
 		scriptMap[f.Name] = f.Content
 	}
+	r.cachedDockerfile = container.GenerateBaseDockerfile()
 	r.buildInput = config.BuildInput{
 		Version:    Version,
-		Dockerfile: container.GenerateBaseDockerfile(),
+		Dockerfile: r.cachedDockerfile,
 		Scripts:    scriptMap,
 		ProjectCfg: r.projectCfg,
 	}
@@ -351,7 +356,10 @@ func (r *runner) buildAndCreate() {
 
 	if needImageBuild {
 		info("Building sandbox...")
-		err := container.BuildImage(r.ctx, r.cli, r.imageTag, verbosity >= 1, r.projectCfg, Version, r.noCache, info)
+		err := container.BuildImage(r.ctx, r.cli, r.imageTag, verbosity >= 1, r.projectCfg, Version, r.noCache, info, &container.BuildCache{
+			Dockerfile: r.cachedDockerfile,
+			Scripts:    r.cachedScripts,
+		})
 		if err != nil {
 			die("Failed to build sandbox: " + err.Error())
 		}

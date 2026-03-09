@@ -50,7 +50,21 @@ func SeedSettings(ctx context.Context, cli *client.Client, containerID, workspac
 	if info, err := os.Stat(hostClaudeDir); err == nil && info.IsDir() {
 		if err := container.CopyDirToContainerExec(ctx, cli, containerID, hostClaudeDir, claudeDir,
 			func(relPath string, isDir bool) bool {
-				return isDir && filepath.Base(relPath) == ".claude-bunker"
+				// Skip our own config subdirectory.
+				if isDir && filepath.Base(relPath) == ".claude-bunker" {
+					return true
+				}
+				// Skip workspace settings files — injected settings.json or
+				// settings.local.json could override managed-settings.json,
+				// weakening the sandbox. Legitimate config (commands/, agents/)
+				// is still copied.
+				if !isDir {
+					base := filepath.Base(relPath)
+					if base == "settings.json" || base == "settings.local.json" {
+						return true
+					}
+				}
+				return false
 			}); err != nil {
 			fmt.Fprintf(logW, "[claude-bunker] WARNING: copying .claude/ tree: %v\n", err)
 		}

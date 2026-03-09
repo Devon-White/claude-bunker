@@ -357,13 +357,22 @@ func domainsFromServers(servers map[string]mcpServerEntry) []string {
 	return domains
 }
 
-// walkPluginCacheMCP walks the plugin cache directory structure and calls fn
-// for each .mcp.json file found. The structure is: cache/<marketplace>/<plugin>/<version>/.mcp.json
-func walkPluginCacheMCP(cacheDir string, fn func(pluginName string, data []byte)) {
+// pluginCacheEntry holds the parsed data from a single plugin cache .mcp.json file.
+type pluginCacheEntry struct {
+	pluginName string
+	data       []byte
+}
+
+// walkPluginCacheMCP walks the plugin cache directory structure once and returns
+// all .mcp.json entries. The structure is: cache/<marketplace>/<plugin>/<version>/.mcp.json
+//
+// Returns all entries so each caller avoids a redundant directory walk.
+func walkPluginCacheMCP(cacheDir string) []pluginCacheEntry {
 	marketplaces, err := os.ReadDir(cacheDir)
 	if err != nil {
-		return
+		return nil
 	}
+	var entries []pluginCacheEntry
 	for _, mp := range marketplaces {
 		if !mp.IsDir() {
 			continue
@@ -389,19 +398,20 @@ func walkPluginCacheMCP(cacheDir string, fn func(pluginName string, data []byte)
 				if err != nil {
 					continue
 				}
-				fn(plugin.Name(), data)
+				entries = append(entries, pluginCacheEntry{pluginName: plugin.Name(), data: data})
 			}
 		}
 	}
+	return entries
 }
 
 // extractPluginCacheDomains scans installed plugin cache directories for
 // .mcp.json files containing HTTP MCP servers and extracts their domains.
 func extractPluginCacheDomains(cacheDir string) []string {
 	var domains []string
-	walkPluginCacheMCP(cacheDir, func(_ string, data []byte) {
-		domains = append(domains, extractMCPDomainsFromData(data)...)
-	})
+	for _, entry := range walkPluginCacheMCP(cacheDir) {
+		domains = append(domains, extractMCPDomainsFromData(entry.data)...)
+	}
 	return domains
 }
 
@@ -478,13 +488,13 @@ func collectStdioRuntimes(data []byte, seen map[string]bool) []runtimeCheck {
 // collectPluginCacheRuntimes collects stdio MCP server commands from plugin cache .mcp.json files.
 func collectPluginCacheRuntimes(cacheDir string, seen map[string]bool) []runtimeCheck {
 	var checks []runtimeCheck
-	walkPluginCacheMCP(cacheDir, func(pluginName string, data []byte) {
+	for _, entry := range walkPluginCacheMCP(cacheDir) {
 		var servers map[string]mcpServerEntry
-		if err := json.Unmarshal(data, &servers); err != nil {
-			return
+		if err := json.Unmarshal(entry.data, &servers); err != nil {
+			continue
 		}
-		checks = append(checks, collectFromServers(servers, fmt.Sprintf(" (plugin %q)", pluginName), seen)...)
-	})
+		checks = append(checks, collectFromServers(servers, fmt.Sprintf(" (plugin %q)", entry.pluginName), seen)...)
+	}
 	return checks
 }
 

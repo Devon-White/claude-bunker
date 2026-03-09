@@ -3,11 +3,11 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
 	"github.com/spf13/cobra"
 
 	"github.com/Devon-White/claude-bunker/internal/config"
@@ -36,30 +36,27 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	containerName := config.ContainerName(workspace)
 	imageTag := config.ImageTag(containerName)
 
-	// Find container (running or stopped)
-	f := filters.NewArgs()
-	f.Add("label", ctr.LabelKey+"="+containerName)
-	containers, err := cli.ContainerList(ctx, container.ListOptions{
-		All:     true,
-		Filters: f,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to query containers: %w", err)
-	}
-
 	fmt.Println(kvLine("Workspace:", workspace))
 	fmt.Println(kvLine("Container:", containerName))
 	fmt.Println(kvLine("Image:", imageTag))
 
-	if len(containers) == 0 {
+	// Find container (running or stopped)
+	id, err := ctr.FindByLabel(ctx, cli, containerName)
+	if err != nil {
+		return fmt.Errorf("failed to query containers: %w", err)
+	}
+	if id == "" {
 		fmt.Println(kvLineStyled("State:", "not created", stateStyle("not created")))
 		return nil
 	}
 
-	c := containers[0]
-	state := c.State
+	inspect, err := cli.ContainerInspect(ctx, id)
+	if err != nil {
+		return fmt.Errorf("failed to inspect container: %w", err)
+	}
+	state := inspect.State.Status
 	fmt.Println(kvLineStyled("State:", state, stateStyle(state)))
-	idShort := c.ID
+	idShort := id
 	if len(idShort) > 12 {
 		idShort = idShort[:12]
 	}
@@ -67,8 +64,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	if state == "running" {
 		// Show uptime
-		inspect, err := cli.ContainerInspect(ctx, c.ID)
-		if err == nil && inspect.State != nil && inspect.State.StartedAt != "" {
+		if inspect.State != nil && inspect.State.StartedAt != "" {
 			started, err := time.Parse(time.RFC3339Nano, inspect.State.StartedAt)
 			if err == nil {
 				uptime := time.Since(started).Truncate(time.Second)
@@ -77,7 +73,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 
 		// Check for active sessions
-		sessions := listActiveSessions(ctx, cli, c.ID)
+		sessions := listActiveSessions(ctx, cli, id)
 		if len(sessions) > 0 {
 			fmt.Println(kvLine("Sessions:", strings.Join(sessions, ", ")))
 		} else {
@@ -122,6 +118,7 @@ func printResolvedConfig(cfg config.ProjectConfig) {
 		for name := range cfg.Features {
 			names = append(names, name)
 		}
+		sort.Strings(names)
 		fmt.Println(configLine("features:", strings.Join(names, ", ")))
 	}
 	if len(cfg.Env) > 0 {
@@ -129,6 +126,7 @@ func printResolvedConfig(cfg config.ProjectConfig) {
 		for k, v := range cfg.Env {
 			pairs = append(pairs, k+"="+v)
 		}
+		sort.Strings(pairs)
 		fmt.Println(configLine("env:", strings.Join(pairs, ", ")))
 	}
 	if len(cfg.AllowDomains) > 0 {

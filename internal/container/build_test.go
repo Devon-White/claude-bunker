@@ -109,7 +109,7 @@ func TestGenerateBaseDockerfile_SingleUserSwitch(t *testing.T) {
 
 func TestBuildContextTar_ContainsExpectedFiles(t *testing.T) {
 	df := "FROM debian:bookworm-slim\n"
-	buf, err := buildContextTar(df, nil)
+	buf, err := buildContextTar(df, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
