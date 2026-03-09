@@ -24,6 +24,9 @@ import (
 // verbosity controls output level: -1 = quiet, 0 = normal, 1 = verbose.
 var verbosity int
 
+// envQuiet is the environment variable that suppresses informational output.
+const envQuiet = "CLAUDE_BUNKER_QUIET"
+
 // activeRunner is set during runInSandbox so signal handlers and die() can
 // access the runner for cleanup.
 var activeRunner *runner
@@ -114,7 +117,7 @@ type bunkerFlags struct {
 	apiKey     string
 	oauthToken string
 	quiet      bool
-	isVerbose  bool
+	verbose    bool
 	keep       bool
 	rebuild    bool
 	remaining  []string
@@ -132,7 +135,7 @@ func extractBunkerFlags(args []string) bunkerFlags {
 		"--oauth-token": &f.oauthToken,
 	}
 	boolFlags := map[string]*bool{
-		"--verbose": &f.isVerbose,
+		"--verbose": &f.verbose,
 		"--quiet":   &f.quiet,
 		"--keep":    &f.keep,
 		"--rebuild": &f.rebuild,
@@ -190,9 +193,9 @@ func runInSandbox(passedArgs []string, execCmd string) error {
 
 	// Set verbosity: --quiet or CLAUDE_BUNKER_QUIET=1 suppresses info output,
 	// --verbose enables detailed output.
-	if flags.quiet || os.Getenv("CLAUDE_BUNKER_QUIET") == "1" {
+	if flags.quiet || os.Getenv(envQuiet) == "1" {
 		verbosity = -1
-	} else if flags.isVerbose {
+	} else if flags.verbose {
 		verbosity = 1
 	}
 
@@ -256,7 +259,7 @@ func runInSandbox(passedArgs []string, execCmd string) error {
 	r.cleanup()
 	cli.Close()
 	os.Exit(exitCode)
-	return nil
+	return nil // unreachable, but required by RunE signature
 }
 
 // loadConfig reads project config and resolves auth token precedence.
@@ -356,9 +359,17 @@ func (r *runner) buildAndCreate() {
 
 	if needImageBuild {
 		info("Building sandbox...")
-		err := container.BuildImage(r.ctx, r.cli, r.imageTag, verbosity >= 1, r.projectCfg, Version, r.noCache, info, &container.BuildCache{
-			Dockerfile: r.cachedDockerfile,
-			Scripts:    r.cachedScripts,
+		err := container.BuildImage(r.ctx, r.cli, container.BuildImageOpts{
+			ImageTag:     r.imageTag,
+			StreamOutput: verbosity >= 1,
+			ProjectCfg:   r.projectCfg,
+			Version:      Version,
+			NoCache:      r.noCache,
+			LogFn:        info,
+			Cache: &container.BuildCache{
+				Dockerfile: r.cachedDockerfile,
+				Scripts:    r.cachedScripts,
+			},
 		})
 		if err != nil {
 			die("Failed to build sandbox: " + err.Error())

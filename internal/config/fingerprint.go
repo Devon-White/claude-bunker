@@ -177,8 +177,8 @@ func SaveCombinedFingerprint(b BuildInput, containerName string) error {
 	return SaveFingerprint(containerName, fp)
 }
 
-// CacheDir returns the fingerprint cache directory.
-func CacheDir() (string, error) {
+// cacheDir returns the fingerprint cache directory.
+func cacheDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -189,7 +189,7 @@ func CacheDir() (string, error) {
 
 // FingerprintPath returns the path to the cached fingerprint for a container.
 func FingerprintPath(containerName string) (string, error) {
-	dir, err := CacheDir()
+	dir, err := cacheDir()
 	if err != nil {
 		return "", err
 	}

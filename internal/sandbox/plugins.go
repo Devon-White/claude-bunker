@@ -363,11 +363,29 @@ type pluginCacheEntry struct {
 	data       []byte
 }
 
-// walkPluginCacheMCP walks the plugin cache directory structure once and returns
+// pluginCacheResults caches the output of walkPluginCacheMCP so that multiple
+// callers (ExtractPluginDomains and SeedPlugins) avoid redundant directory walks
+// within the same process.
+var pluginCacheResults struct {
+	dir     string
+	entries []pluginCacheEntry
+}
+
+// walkPluginCacheMCP walks the plugin cache directory structure and returns
 // all .mcp.json entries. The structure is: cache/<marketplace>/<plugin>/<version>/.mcp.json
-//
-// Returns all entries so each caller avoids a redundant directory walk.
+// Results are cached per directory path to avoid redundant walks.
 func walkPluginCacheMCP(cacheDir string) []pluginCacheEntry {
+	if pluginCacheResults.dir == cacheDir && pluginCacheResults.entries != nil {
+		return pluginCacheResults.entries
+	}
+	entries := walkPluginCacheMCPUncached(cacheDir)
+	pluginCacheResults.dir = cacheDir
+	pluginCacheResults.entries = entries
+	return entries
+}
+
+// walkPluginCacheMCPUncached performs the actual directory walk.
+func walkPluginCacheMCPUncached(cacheDir string) []pluginCacheEntry {
 	marketplaces, err := os.ReadDir(cacheDir)
 	if err != nil {
 		return nil

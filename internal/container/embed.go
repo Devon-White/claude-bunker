@@ -2,7 +2,10 @@ package container
 
 import (
 	"embed"
+	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 )
 
 //go:embed scripts/*
@@ -47,4 +50,24 @@ func BuildContextScripts() []BuildContextFile {
 		{"refresh-firewall.sh", copyScript(refreshFirewallScript), 0755},
 		{"tmux.conf", copyScript(tmuxConf), 0644},
 	}
+}
+
+// WriteBuildContext writes the base Dockerfile and all embedded scripts to
+// outDir. Used by --dump-dockerfile and cmd/genbuild.
+func WriteBuildContext(outDir string) error {
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return fmt.Errorf("creating output dir: %w", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(outDir, "Dockerfile"), []byte(GenerateBaseDockerfile()), 0644); err != nil {
+		return fmt.Errorf("writing Dockerfile: %w", err)
+	}
+
+	for _, f := range BuildContextScripts() {
+		if err := os.WriteFile(filepath.Join(outDir, f.Name), f.Content, f.Mode); err != nil {
+			return fmt.Errorf("writing %s: %w", f.Name, err)
+		}
+	}
+
+	return nil
 }

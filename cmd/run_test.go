@@ -64,7 +64,7 @@ func TestExtractBunkerFlags(t *testing.T) {
 			name: "verbose flag",
 			args: []string{"--verbose"},
 			want: bunkerFlags{
-				isVerbose: true,
+				verbose: true,
 			},
 		},
 		{
@@ -93,7 +93,7 @@ func TestExtractBunkerFlags(t *testing.T) {
 			args: []string{"--gh-token", "ghp_abc", "--model", "opus", "--verbose", "--print", "hello world"},
 			want: bunkerFlags{
 				ghToken:   "ghp_abc",
-				isVerbose: true,
+				verbose: true,
 				remaining: []string{"--model", "opus", "--print", "hello world"},
 			},
 		},
@@ -119,7 +119,7 @@ func TestExtractBunkerFlags(t *testing.T) {
 				ghToken:    "ghp_abc",
 				apiKey:     "sk-ant-123",
 				oauthToken: "oauth_xyz",
-				isVerbose:  true,
+				verbose:  true,
 				keep:       true,
 				quiet:      true,
 				rebuild:    true,
@@ -190,8 +190,8 @@ func TestExtractBunkerFlags(t *testing.T) {
 			if got.quiet != tt.want.quiet {
 				t.Errorf("quiet = %v, want %v", got.quiet, tt.want.quiet)
 			}
-			if got.isVerbose != tt.want.isVerbose {
-				t.Errorf("isVerbose = %v, want %v", got.isVerbose, tt.want.isVerbose)
+			if got.verbose != tt.want.verbose {
+				t.Errorf("verbose = %v, want %v", got.verbose, tt.want.verbose)
 			}
 			if got.keep != tt.want.keep {
 				t.Errorf("keep = %v, want %v", got.keep, tt.want.keep)

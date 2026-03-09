@@ -395,7 +395,7 @@ func mergeSettings(cfg map[string]interface{}, s initSettings) {
 // writeConfig writes config to disk. If cfg is nil, writes "{}".
 func writeConfig(path string, cfg map[string]interface{}) error {
 	var data []byte
-	if cfg == nil || len(cfg) == 0 {
+	if len(cfg) == 0 {
 		data = []byte("{}\n")
 	} else {
 		var err error

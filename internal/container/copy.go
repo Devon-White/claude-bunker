@@ -54,6 +54,18 @@ func buildDirTar(hostDir string, skip func(relPath string, isDir bool) bool) (*b
 			return nil
 		}
 
+		// Skip symlinks to prevent symlink-based traversal attacks. A symlink
+		// in a host directory could point to a sensitive container path (e.g.
+		// /etc/claude-code/managed-settings.json); copying and chown-ing it
+		// would change ownership of the target file. filepath.Walk follows
+		// symlinks, so we re-stat with Lstat to detect them.
+		if linfo, lerr := os.Lstat(path); lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+			if linfo.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
 		if info.IsDir() {
 			return tw.WriteHeader(&tar.Header{
 				Typeflag: tar.TypeDir,

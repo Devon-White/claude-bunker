@@ -503,8 +503,9 @@ func createAuthWrapper(script *strings.Builder, ug string, opts RunPostStartOpts
 }
 
 // copyHostGitIdentity extracts user.name and user.email from the host's
-// git config and sets them in the container. Only identity fields are copied;
-// credential helpers and other sensitive config are deliberately excluded.
+// git config and sets them in the container via a single exec call. Only
+// identity fields are copied; credential helpers and other sensitive config
+// are deliberately excluded.
 func copyHostGitIdentity(ctx context.Context, cli *client.Client, containerID string) error {
 	name, nameErr := execGitConfig("user.name")
 	email, emailErr := execGitConfig("user.email")
@@ -513,17 +514,22 @@ func copyHostGitIdentity(ctx context.Context, cli *client.Client, containerID st
 		return nil // no git identity configured on host
 	}
 
+	// Combine both git config commands into a single exec to reduce Docker API round-trips.
+	var script strings.Builder
+	script.WriteString("set -e\n")
 	if nameErr == nil && name != "" {
-		if _, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
-			[]string{"git", "config", "--global", "user.name", name}); err != nil {
-			return fmt.Errorf("setting git user.name in container: %w", err)
-		}
+		fmt.Fprintf(&script, "git config --global user.name %q\n", name)
 	}
 	if emailErr == nil && email != "" {
-		if _, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
-			[]string{"git", "config", "--global", "user.email", email}); err != nil {
-			return fmt.Errorf("setting git user.email in container: %w", err)
-		}
+		fmt.Fprintf(&script, "git config --global user.email %q\n", email)
+	}
+	if script.Len() <= len("set -e\n") {
+		return nil // nothing to set
+	}
+
+	if _, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
+		[]string{"sh", "-c", script.String()}); err != nil {
+		return fmt.Errorf("setting git identity in container: %w", err)
 	}
 
 	return nil

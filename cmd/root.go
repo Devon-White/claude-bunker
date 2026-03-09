@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -57,7 +56,7 @@ func init() {
 // initVerbosity sets the verbosity level from cobra flags or the CLAUDE_BUNKER_QUIET env var.
 // Call from subcommand RunE functions before any output.
 func initVerbosity(cmd *cobra.Command) {
-	if q, _ := cmd.Flags().GetBool("quiet"); q || os.Getenv("CLAUDE_BUNKER_QUIET") == "1" {
+	if q, _ := cmd.Flags().GetBool("quiet"); q || os.Getenv(envQuiet) == "1" {
 		verbosity = -1
 	} else if v, _ := cmd.Flags().GetBool("verbose"); v {
 		verbosity = 1
@@ -110,19 +109,8 @@ func dumpDockerfile() error {
 		}
 	}
 
-	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return fmt.Errorf("creating output dir: %w", err)
-	}
-
-	dockerfile := container.GenerateBaseDockerfile()
-	if err := os.WriteFile(filepath.Join(outDir, "Dockerfile"), []byte(dockerfile), 0644); err != nil {
-		return fmt.Errorf("writing Dockerfile: %w", err)
-	}
-
-	for _, f := range container.BuildContextScripts() {
-		if err := os.WriteFile(filepath.Join(outDir, f.Name), f.Content, f.Mode); err != nil {
-			return fmt.Errorf("writing %s: %w", f.Name, err)
-		}
+	if err := container.WriteBuildContext(outDir); err != nil {
+		return err
 	}
 
 	fmt.Println(outDir)

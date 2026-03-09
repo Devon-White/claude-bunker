@@ -346,8 +346,11 @@ func writeFeatureFiles(featureDir string, opts map[string]interface{}) error {
 		sort.Strings(keys)
 		for _, k := range keys {
 			// Use single quotes to prevent shell command substitution.
-			// Escape embedded single quotes with the '\'' idiom.
+			// Escape embedded single quotes with the '\'' idiom, and strip
+			// newlines to prevent shell injection via multiline values.
 			val := fmt.Sprintf("%v", opts[k])
+			val = strings.ReplaceAll(val, "\n", " ")
+			val = strings.ReplaceAll(val, "\r", "")
 			val = strings.ReplaceAll(val, "'", `'\''`)
 			envBuf.WriteString(fmt.Sprintf("%s='%s'\n", safeOptionEnvName(k), val))
 		}
