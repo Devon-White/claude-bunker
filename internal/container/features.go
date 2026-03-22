@@ -11,12 +11,15 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/Devon-White/claude-bunker/internal/config"
+	"github.com/Devon-White/claude-bunker/internal/log"
 
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"golang.org/x/sync/errgroup"
 )
 
 // ResolvedFeature holds a downloaded and extracted devcontainer feature.
@@ -73,52 +76,70 @@ func ResolveFeatures(features map[string]map[string]interface{}) ([]ResolvedFeat
 	}
 	cleanup := func() { os.RemoveAll(tmpBase) }
 
-	var resolved []ResolvedFeature
+	// Sort feature names for deterministic ordering.
+	names := make([]string, 0, len(features))
+	for name := range features {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 
-	for name, opts := range features {
-		ref, err := config.ResolveFeatureName(name)
-		if err != nil {
-			cleanup()
-			return nil, func() {}, err
-		}
+	// Download features concurrently (max 4 parallel).
+	resolved := make([]ResolvedFeature, len(names))
+	var mu sync.Mutex // protects log output only
+	g := new(errgroup.Group)
+	g.SetLimit(4)
 
-		featureDir := filepath.Join(tmpBase, safeFeatureDirName(name))
-		if err := os.MkdirAll(featureDir, 0755); err != nil {
-			cleanup()
-			return nil, func() {}, fmt.Errorf("mkdir %s: %w", name, err)
-		}
+	for i, name := range names {
+		i, name := i, name // capture loop vars
+		opts := features[name]
+		g.Go(func() error {
+			ref, err := config.ResolveFeatureName(name)
+			if err != nil {
+				return err
+			}
 
-		fmt.Fprintf(os.Stderr, "[claude-bunker] Pulling feature: %s\n", name)
-		if err := downloadAndExtract(ref, featureDir); err != nil {
-			cleanup()
-			return nil, func() {}, fmt.Errorf("downloading feature %s (%s): %w", name, ref, err)
-		}
+			featureDir := filepath.Join(tmpBase, safeFeatureDirName(name))
+			if err := os.MkdirAll(featureDir, 0755); err != nil {
+				return fmt.Errorf("mkdir %s: %w", name, err)
+			}
 
-		meta, err := readFeatureMetadata(featureDir)
-		if err != nil {
-			// Metadata is optional; use defaults
-			meta = featureMetadata{ID: name}
-		}
+			mu.Lock()
+			log.Infof("Pulling feature: %s", name)
+			mu.Unlock()
 
-		if meta.ID == "" {
-			meta.ID = name
-		}
+			if err := downloadAndExtract(ref, featureDir); err != nil {
+				return fmt.Errorf("downloading feature %s (%s): %w", name, ref, err)
+			}
 
-		installsAfter := meta.installsAfterRefs()
+			meta, err := readFeatureMetadata(featureDir)
+			if err != nil {
+				// Metadata is optional; use defaults
+				meta = featureMetadata{ID: name}
+			}
 
-		if err := writeFeatureFiles(featureDir, opts); err != nil {
-			cleanup()
-			return nil, func() {}, fmt.Errorf("writing feature files for %s: %w", name, err)
-		}
+			if meta.ID == "" {
+				meta.ID = name
+			}
 
-		resolved = append(resolved, ResolvedFeature{
-			ID:            meta.ID,
-			Source:        ref,
-			InstallDir:    featureDir,
-			Options:       opts,
-			Env:           meta.ContainerEnv,
-			InstallsAfter: installsAfter,
+			if err := writeFeatureFiles(featureDir, opts); err != nil {
+				return fmt.Errorf("writing feature files for %s: %w", name, err)
+			}
+
+			resolved[i] = ResolvedFeature{
+				ID:            meta.ID,
+				Source:        ref,
+				InstallDir:    featureDir,
+				Options:       opts,
+				Env:           meta.ContainerEnv,
+				InstallsAfter: meta.installsAfterRefs(),
+			}
+			return nil
 		})
+	}
+
+	if err := g.Wait(); err != nil {
+		cleanup()
+		return nil, func() {}, err
 	}
 
 	sortFeatures(resolved)
@@ -131,6 +152,13 @@ func downloadAndExtract(ref, destDir string) error {
 	img, err := crane.Pull(ref)
 	if err != nil {
 		return fmt.Errorf("pulling %s: %w", ref, err)
+	}
+
+	// Log the resolved digest for supply-chain auditability.
+	// Tags are mutable — the digest provides a pinnable reference
+	// for reproducing this exact build.
+	if digest, err := img.Digest(); err == nil {
+		log.Infof("  %s → %s", ref, digest.String())
 	}
 
 	return extractImage(img, destDir)
@@ -321,7 +349,7 @@ func sortFeatures(features []ResolvedFeature) {
 		for i, f := range remaining {
 			cycleIDs[i] = f.ID
 		}
-		fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: dependency cycle detected among features: %s — installing in alphabetical order\n", strings.Join(cycleIDs, ", "))
+		log.Warnf("dependency cycle detected among features: %s — installing in alphabetical order", strings.Join(cycleIDs, ", "))
 
 		result = append(result, remaining...)
 	}

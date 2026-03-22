@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -18,8 +19,8 @@ func TestImageFingerprint_Deterministic(t *testing.T) {
 		ProjectCfg: ProjectConfig{},
 	}
 
-	fp1 := ImageFingerprint(b)
-	fp2 := ImageFingerprint(b)
+	fp1 := imageFingerprint(b)
+	fp2 := imageFingerprint(b)
 	if fp1 != fp2 {
 		t.Errorf("fingerprints differ: %s vs %s", fp1, fp2)
 	}
@@ -31,8 +32,8 @@ func TestImageFingerprint_ChangesOnDockerfileChange(t *testing.T) {
 	}
 	cfg := ProjectConfig{}
 
-	fp1 := ImageFingerprint(BuildInput{Version: testVersion, Dockerfile: "FROM debian:bookworm-slim", Scripts: scripts, ProjectCfg: cfg})
-	fp2 := ImageFingerprint(BuildInput{Version: testVersion, Dockerfile: "FROM debian:trixie-slim", Scripts: scripts, ProjectCfg: cfg})
+	fp1 := imageFingerprint(BuildInput{Version: testVersion, Dockerfile: "FROM debian:bookworm-slim", Scripts: scripts, ProjectCfg: cfg})
+	fp2 := imageFingerprint(BuildInput{Version: testVersion, Dockerfile: "FROM debian:trixie-slim", Scripts: scripts, ProjectCfg: cfg})
 
 	if fp1 == fp2 {
 		t.Error("fingerprint should change when Dockerfile changes")
@@ -46,8 +47,8 @@ func TestImageFingerprint_ChangesOnScriptChange(t *testing.T) {
 	scripts1 := map[string][]byte{"init-firewall.sh": []byte("v1")}
 	scripts2 := map[string][]byte{"init-firewall.sh": []byte("v2")}
 
-	fp1 := ImageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts1, ProjectCfg: cfg})
-	fp2 := ImageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts2, ProjectCfg: cfg})
+	fp1 := imageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts1, ProjectCfg: cfg})
+	fp2 := imageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts2, ProjectCfg: cfg})
 
 	if fp1 == fp2 {
 		t.Error("fingerprint should change when script content changes")
@@ -61,8 +62,8 @@ func TestImageFingerprint_ChangesOnAptPackages(t *testing.T) {
 	cfg1 := ProjectConfig{Apt: []string{"vim"}}
 	cfg2 := ProjectConfig{Apt: []string{"vim", "curl"}}
 
-	fp1 := ImageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg1})
-	fp2 := ImageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg2})
+	fp1 := imageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg1})
+	fp2 := imageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg2})
 
 	if fp1 == fp2 {
 		t.Error("fingerprint should change when apt packages change")
@@ -74,8 +75,8 @@ func TestImageFingerprint_ChangesOnVersionChange(t *testing.T) {
 	scripts := map[string][]byte{"init-firewall.sh": []byte("#!/bin/bash")}
 	cfg := ProjectConfig{}
 
-	fp1 := ImageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg})
-	fp2 := ImageFingerprint(BuildInput{Version: "v1.1.0", Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg})
+	fp1 := imageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg})
+	fp2 := imageFingerprint(BuildInput{Version: "v1.1.0", Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg})
 
 	if fp1 == fp2 {
 		t.Error("fingerprint should change when version changes")
@@ -93,18 +94,18 @@ func TestCompareFingerprints_VersionChange(t *testing.T) {
 	b := BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg}
 
 	// Save fingerprint with v1.0.0
-	err := SaveCombinedFingerprint(b, "test-container")
-	if err != nil {
+	result := CompareFingerprints(b, "test-container")
+	if err := result.Save("test-container"); err != nil {
 		t.Fatal(err)
 	}
 
 	// Compare with v1.1.0 — image should NOT match (version changed)
 	b2 := BuildInput{Version: "v1.1.0", Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg}
-	result := CompareFingerprints(b2, "test-container")
-	if result.ImageMatch {
+	result2 := CompareFingerprints(b2, "test-container")
+	if result2.ImageMatch {
 		t.Error("image fingerprint should NOT match after version upgrade")
 	}
-	if !result.ContainerMatch {
+	if !result2.ContainerMatch {
 		t.Error("container fingerprint should still match (version doesn't affect container fp)")
 	}
 }
@@ -113,8 +114,8 @@ func TestContainerFingerprint_ChangesOnDomains(t *testing.T) {
 	cfg1 := ProjectConfig{AllowDomains: []string{"example.com"}}
 	cfg2 := ProjectConfig{AllowDomains: []string{"example.com", "other.com"}}
 
-	fp1 := ContainerFingerprint(cfg1)
-	fp2 := ContainerFingerprint(cfg2)
+	fp1 := containerFingerprint(cfg1)
+	fp2 := containerFingerprint(cfg2)
 
 	if fp1 == fp2 {
 		t.Error("container fingerprint should change when domains change")
@@ -128,8 +129,8 @@ func TestContainerFingerprint_DoesNotAffectImage(t *testing.T) {
 	cfg1 := ProjectConfig{AllowDomains: []string{"example.com"}}
 	cfg2 := ProjectConfig{AllowDomains: []string{"other.com"}}
 
-	imgFP1 := ImageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg1})
-	imgFP2 := ImageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg2})
+	imgFP1 := imageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg1})
+	imgFP2 := imageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg2})
 
 	if imgFP1 != imgFP2 {
 		t.Error("image fingerprint should NOT change when only domains change")
@@ -144,25 +145,28 @@ func TestCombinedFingerprint_Format(t *testing.T) {
 		ProjectCfg: ProjectConfig{},
 	}
 
-	fp := CombinedFingerprint(b)
+	// Use CompareFingerprints with a non-existent cache to get the combined hash
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	result := CompareFingerprints(b, "test-container")
+
+	// Save and load to verify format
+	if err := result.Save("test-container"); err != nil {
+		t.Fatal(err)
+	}
+	fp, err := loadFingerprint("test-container")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Should contain a colon separating image and container fingerprints
 	if len(fp) < 65 { // At minimum: 64 hex chars + ":" + some hex chars
 		t.Errorf("combined fingerprint too short: %s", fp)
 	}
-	parts := splitFingerprint(fp)
+	parts := strings.SplitN(fp, ":", 2)
 	if len(parts) != 2 {
 		t.Errorf("combined fingerprint should have 2 parts separated by ':', got: %s", fp)
 	}
-}
-
-func splitFingerprint(fp string) []string {
-	for i, c := range fp {
-		if c == ':' {
-			return []string{fp[:i], fp[i+1:]}
-		}
-	}
-	return []string{fp}
 }
 
 func TestCompareFingerprints_FullMatch(t *testing.T) {
@@ -176,18 +180,18 @@ func TestCompareFingerprints_FullMatch(t *testing.T) {
 		ProjectCfg: ProjectConfig{},
 	}
 
-	// Save fingerprint
-	err := SaveCombinedFingerprint(b, "test-container")
-	if err != nil {
+	// Save fingerprint via CompareFingerprints + Save
+	result := CompareFingerprints(b, "test-container")
+	if err := result.Save("test-container"); err != nil {
 		t.Fatal(err)
 	}
 
 	// Compare — should match both
-	result := CompareFingerprints(b, "test-container")
-	if !result.ImageMatch {
+	result2 := CompareFingerprints(b, "test-container")
+	if !result2.ImageMatch {
 		t.Error("image fingerprint should match")
 	}
-	if !result.ContainerMatch {
+	if !result2.ContainerMatch {
 		t.Error("container fingerprint should match")
 	}
 }
@@ -201,18 +205,19 @@ func TestCompareFingerprints_ContainerOnlyChange(t *testing.T) {
 	cfg1 := ProjectConfig{AllowDomains: []string{"example.com"}}
 
 	// Save with original config
-	err := SaveCombinedFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg1}, "test-container")
-	if err != nil {
+	b1 := BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg1}
+	result := CompareFingerprints(b1, "test-container")
+	if err := result.Save("test-container"); err != nil {
 		t.Fatal(err)
 	}
 
 	// Compare with changed domains (container-only change)
 	cfg2 := ProjectConfig{AllowDomains: []string{"other.com"}}
-	result := CompareFingerprints(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg2}, "test-container")
-	if !result.ImageMatch {
+	result2 := CompareFingerprints(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg2}, "test-container")
+	if !result2.ImageMatch {
 		t.Error("image fingerprint should still match (only domains changed)")
 	}
-	if result.ContainerMatch {
+	if result2.ContainerMatch {
 		t.Error("container fingerprint should NOT match (domains changed)")
 	}
 }
@@ -221,12 +226,12 @@ func TestSaveAndLoadFingerprint(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
-	err := SaveFingerprint("test-container", "abc123:def456")
+	err := saveFingerprint("test-container", "abc123:def456")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	loaded, err := LoadFingerprint("test-container")
+	loaded, err := loadFingerprint("test-container")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +245,7 @@ func TestClearFingerprint(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	// Save a fingerprint
-	err := SaveFingerprint("test-container", "abc123:def456")
+	err := saveFingerprint("test-container", "abc123:def456")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +257,7 @@ func TestClearFingerprint(t *testing.T) {
 	}
 
 	// Should be gone
-	_, err = LoadFingerprint("test-container")
+	_, err = loadFingerprint("test-container")
 	if err == nil {
 		t.Error("expected error loading cleared fingerprint")
 	}
@@ -312,8 +317,8 @@ func TestContainerFingerprint_ChangesOnPlugins(t *testing.T) {
 	cfg1 := ProjectConfig{}
 	cfg2 := ProjectConfig{Plugins: "user"}
 
-	fp1 := ContainerFingerprint(cfg1)
-	fp2 := ContainerFingerprint(cfg2)
+	fp1 := containerFingerprint(cfg1)
+	fp2 := containerFingerprint(cfg2)
 
 	if fp1 == fp2 {
 		t.Error("container fingerprint should change when plugins field changes")
@@ -321,7 +326,7 @@ func TestContainerFingerprint_ChangesOnPlugins(t *testing.T) {
 
 	// Different plugin levels should produce different fingerprints
 	cfg3 := ProjectConfig{Plugins: "all"}
-	fp3 := ContainerFingerprint(cfg3)
+	fp3 := containerFingerprint(cfg3)
 	if fp2 == fp3 {
 		t.Error("container fingerprint should differ between plugin levels")
 	}
@@ -335,9 +340,9 @@ func TestContainerFingerprint_ChangesOnSeedHistory(t *testing.T) {
 	boolFalse := false
 	cfgFalse := ProjectConfig{SeedHistory: &boolFalse}
 
-	fpDefault := ContainerFingerprint(cfgDefault)
-	fpTrue := ContainerFingerprint(cfgTrue)
-	fpFalse := ContainerFingerprint(cfgFalse)
+	fpDefault := containerFingerprint(cfgDefault)
+	fpTrue := containerFingerprint(cfgTrue)
+	fpFalse := containerFingerprint(cfgFalse)
 
 	if fpDefault == fpTrue {
 		t.Error("container fingerprint should change when seedHistory is explicitly set to true vs unset")
@@ -371,7 +376,7 @@ func TestPluginLevel(t *testing.T) {
 	}
 }
 
-// Ensure HOME env var is set for test (needed for CacheDir)
+// Ensure HOME env var is set for test (needed for cacheDir)
 func init() {
 	if os.Getenv("HOME") == "" {
 		os.Setenv("HOME", os.TempDir())

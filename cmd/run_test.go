@@ -3,6 +3,8 @@ package cmd
 import (
 	"slices"
 	"testing"
+
+	"github.com/Devon-White/claude-bunker/internal/container"
 )
 
 func TestExtractBunkerFlags(t *testing.T) {
@@ -22,42 +24,42 @@ func TestExtractBunkerFlags(t *testing.T) {
 			name: "gh-token with space-separated value",
 			args: []string{"--gh-token", "ghp_abc123"},
 			want: bunkerFlags{
-				ghToken: "ghp_abc123",
+				auth: container.AuthTokens{GhToken: "ghp_abc123"},
 			},
 		},
 		{
 			name: "gh-token with equals form",
 			args: []string{"--gh-token=ghp_abc123"},
 			want: bunkerFlags{
-				ghToken: "ghp_abc123",
+				auth: container.AuthTokens{GhToken: "ghp_abc123"},
 			},
 		},
 		{
 			name: "api-key with space-separated value",
 			args: []string{"--api-key", "sk-ant-abc123"},
 			want: bunkerFlags{
-				apiKey: "sk-ant-abc123",
+				auth: container.AuthTokens{ApiKey: "sk-ant-abc123"},
 			},
 		},
 		{
 			name: "api-key with equals form",
 			args: []string{"--api-key=sk-ant-abc123"},
 			want: bunkerFlags{
-				apiKey: "sk-ant-abc123",
+				auth: container.AuthTokens{ApiKey: "sk-ant-abc123"},
 			},
 		},
 		{
 			name: "oauth-token with space-separated value",
 			args: []string{"--oauth-token", "oauth_xyz789"},
 			want: bunkerFlags{
-				oauthToken: "oauth_xyz789",
+				auth: container.AuthTokens{OAuthToken: "oauth_xyz789"},
 			},
 		},
 		{
 			name: "oauth-token with equals form",
 			args: []string{"--oauth-token=oauth_xyz789"},
 			want: bunkerFlags{
-				oauthToken: "oauth_xyz789",
+				auth: container.AuthTokens{OAuthToken: "oauth_xyz789"},
 			},
 		},
 		{
@@ -92,7 +94,7 @@ func TestExtractBunkerFlags(t *testing.T) {
 			name: "mixed bunker and claude flags",
 			args: []string{"--gh-token", "ghp_abc", "--model", "opus", "--verbose", "--print", "hello world"},
 			want: bunkerFlags{
-				ghToken:   "ghp_abc",
+				auth:    container.AuthTokens{GhToken: "ghp_abc"},
 				verbose: true,
 				remaining: []string{"--model", "opus", "--print", "hello world"},
 			},
@@ -100,9 +102,7 @@ func TestExtractBunkerFlags(t *testing.T) {
 		{
 			name: "flag at end with no value does not panic",
 			args: []string{"--gh-token"},
-			want: bunkerFlags{
-				ghToken: "",
-			},
+			want: bunkerFlags{},
 		},
 		{
 			name: "multiple bunker flags all extracted",
@@ -116,13 +116,11 @@ func TestExtractBunkerFlags(t *testing.T) {
 				"--rebuild",
 			},
 			want: bunkerFlags{
-				ghToken:    "ghp_abc",
-				apiKey:     "sk-ant-123",
-				oauthToken: "oauth_xyz",
-				verbose:  true,
-				keep:       true,
-				quiet:      true,
-				rebuild:    true,
+				auth:    container.AuthTokens{GhToken: "ghp_abc", ApiKey: "sk-ant-123", OAuthToken: "oauth_xyz"},
+				verbose: true,
+				keep:    true,
+				quiet:   true,
+				rebuild: true,
 			},
 		},
 		{
@@ -138,32 +136,26 @@ func TestExtractBunkerFlags(t *testing.T) {
 		{
 			name: "api-key at end with no value does not panic",
 			args: []string{"--api-key"},
-			want: bunkerFlags{
-				apiKey: "",
-			},
+			want: bunkerFlags{},
 		},
 		{
 			name: "oauth-token at end with no value does not panic",
 			args: []string{"--oauth-token"},
-			want: bunkerFlags{
-				oauthToken: "",
-			},
+			want: bunkerFlags{},
 		},
 		{
 			name: "bunker flags interspersed among claude flags",
 			args: []string{"--print", "--gh-token", "ghp_abc", "--model", "opus", "--quiet", "--dangerously-skip-permissions"},
 			want: bunkerFlags{
-				ghToken: "ghp_abc",
-				quiet:   true,
+				auth:  container.AuthTokens{GhToken: "ghp_abc"},
+				quiet: true,
 				remaining: []string{"--print", "--model", "opus", "--dangerously-skip-permissions"},
 			},
 		},
 		{
 			name: "equals form with empty value",
 			args: []string{"--gh-token="},
-			want: bunkerFlags{
-				ghToken: "",
-			},
+			want: bunkerFlags{},
 		},
 		{
 			name: "only non-bunker flags all land in remaining",
@@ -178,14 +170,14 @@ func TestExtractBunkerFlags(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := extractBunkerFlags(tt.args)
 
-			if got.ghToken != tt.want.ghToken {
-				t.Errorf("ghToken = %q, want %q", got.ghToken, tt.want.ghToken)
+			if got.auth.GhToken != tt.want.auth.GhToken {
+				t.Errorf("auth.GhToken = %q, want %q", got.auth.GhToken, tt.want.auth.GhToken)
 			}
-			if got.apiKey != tt.want.apiKey {
-				t.Errorf("apiKey = %q, want %q", got.apiKey, tt.want.apiKey)
+			if got.auth.ApiKey != tt.want.auth.ApiKey {
+				t.Errorf("auth.ApiKey = %q, want %q", got.auth.ApiKey, tt.want.auth.ApiKey)
 			}
-			if got.oauthToken != tt.want.oauthToken {
-				t.Errorf("oauthToken = %q, want %q", got.oauthToken, tt.want.oauthToken)
+			if got.auth.OAuthToken != tt.want.auth.OAuthToken {
+				t.Errorf("auth.OAuthToken = %q, want %q", got.auth.OAuthToken, tt.want.auth.OAuthToken)
 			}
 			if got.quiet != tt.want.quiet {
 				t.Errorf("quiet = %v, want %v", got.quiet, tt.want.quiet)

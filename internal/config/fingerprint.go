@@ -19,10 +19,10 @@ type BuildInput struct {
 	ProjectCfg ProjectConfig
 }
 
-// ImageFingerprint computes a SHA-256 hash of all inputs that affect the Docker
+// imageFingerprint computes a SHA-256 hash of all inputs that affect the Docker
 // image build: the claude-bunker version, the generated Dockerfile, embedded
 // scripts, apt packages, features config, and user env vars baked into the image.
-func ImageFingerprint(b BuildInput) string {
+func imageFingerprint(b BuildInput) string {
 	h := sha256.New()
 
 	// Hash the claude-bunker version so upgrades invalidate the cache
@@ -91,13 +91,13 @@ func ImageFingerprint(b BuildInput) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-// ContainerFingerprint computes a SHA-256 hash of inputs that affect container
+// containerFingerprint computes a SHA-256 hash of inputs that affect container
 // creation but NOT the Docker image: allowDomains, workspace path, exclude
 // paths, and postStartCommand.
 //
 // Changes to container-only inputs require container recreation but not an
 // image rebuild, saving significant time.
-func ContainerFingerprint(projectCfg ProjectConfig) string {
+func containerFingerprint(projectCfg ProjectConfig) string {
 	h := sha256.New()
 
 	// AllowDomains affect firewall setup at container start
@@ -133,48 +133,55 @@ func ContainerFingerprint(projectCfg ProjectConfig) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-// CombinedFingerprint produces a single fingerprint string that encodes both
-// image and container components, separated by ":". This is stored in the
-// cache file for comparison.
-func CombinedFingerprint(b BuildInput) string {
-	imgFP := ImageFingerprint(b)
-	ctrFP := ContainerFingerprint(b.ProjectCfg)
-	return imgFP + ":" + ctrFP
-}
-
 // FingerprintResult holds the result of comparing current vs cached fingerprints.
+// The computed hashes are retained so callers can save them without recomputation.
 type FingerprintResult struct {
 	ImageMatch     bool // true if the image fingerprint matches (no rebuild needed)
 	ContainerMatch bool // true if the container fingerprint matches (no recreate needed)
+	combinedHash   string
+}
+
+// Save persists the computed fingerprint to the cache file for the given container.
+// This avoids recomputing the hashes that were already calculated during comparison.
+func (r FingerprintResult) Save(containerName string) error {
+	return saveFingerprint(containerName, r.combinedHash)
 }
 
 // CompareFingerprints computes current fingerprints and compares them against
 // the cached fingerprint for the given container name. Returns which components
-// match.
+// match, and retains the computed hashes for later saving via Save().
 func CompareFingerprints(b BuildInput, containerName string) FingerprintResult {
-	currentImg := ImageFingerprint(b)
-	currentCtr := ContainerFingerprint(b.ProjectCfg)
+	currentImg := imageFingerprint(b)
+	currentCtr := containerFingerprint(b.ProjectCfg)
+	combined := currentImg + ":" + currentCtr
 
-	cached, err := LoadFingerprint(containerName)
+	cached, err := loadFingerprint(containerName)
 	if err != nil {
-		return FingerprintResult{ImageMatch: false, ContainerMatch: false}
+		return FingerprintResult{ImageMatch: false, ContainerMatch: false, combinedHash: combined}
 	}
 
 	parts := strings.SplitN(cached, ":", 2)
 	if len(parts) != 2 {
-		return FingerprintResult{ImageMatch: false, ContainerMatch: false}
+		return FingerprintResult{ImageMatch: false, ContainerMatch: false, combinedHash: combined}
 	}
 
 	return FingerprintResult{
 		ImageMatch:     currentImg == parts[0],
 		ContainerMatch: currentCtr == parts[1],
+		combinedHash:   combined,
 	}
 }
 
-// SaveCombinedFingerprint computes and saves the combined fingerprint.
-func SaveCombinedFingerprint(b BuildInput, containerName string) error {
-	fp := CombinedFingerprint(b)
-	return SaveFingerprint(containerName, fp)
+// ClearFingerprint deletes the cached fingerprint for a container.
+func ClearFingerprint(containerName string) error {
+	p, err := fingerprintPath(containerName)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // cacheDir returns the fingerprint cache directory.
@@ -187,8 +194,8 @@ func cacheDir() (string, error) {
 	return dir, nil
 }
 
-// FingerprintPath returns the path to the cached fingerprint for a container.
-func FingerprintPath(containerName string) (string, error) {
+// fingerprintPath returns the path to the cached fingerprint for a container.
+func fingerprintPath(containerName string) (string, error) {
 	dir, err := cacheDir()
 	if err != nil {
 		return "", err
@@ -196,9 +203,9 @@ func FingerprintPath(containerName string) (string, error) {
 	return filepath.Join(dir, containerName+".fp"), nil
 }
 
-// LoadFingerprint reads the cached fingerprint for a container.
-func LoadFingerprint(containerName string) (string, error) {
-	p, err := FingerprintPath(containerName)
+// loadFingerprint reads the cached fingerprint for a container.
+func loadFingerprint(containerName string) (string, error) {
+	p, err := fingerprintPath(containerName)
 	if err != nil {
 		return "", err
 	}
@@ -209,9 +216,9 @@ func LoadFingerprint(containerName string) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// SaveFingerprint writes the fingerprint to cache.
-func SaveFingerprint(containerName, fingerprint string) error {
-	p, err := FingerprintPath(containerName)
+// saveFingerprint writes the fingerprint to cache.
+func saveFingerprint(containerName, fingerprint string) error {
+	p, err := fingerprintPath(containerName)
 	if err != nil {
 		return err
 	}
@@ -219,18 +226,6 @@ func SaveFingerprint(containerName, fingerprint string) error {
 		return err
 	}
 	return os.WriteFile(p, []byte(fingerprint), 0600)
-}
-
-// ClearFingerprint deletes the cached fingerprint for a container.
-func ClearFingerprint(containerName string) error {
-	p, err := FingerprintPath(containerName)
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
 }
 
 // EffectiveWorkdir returns the container working directory based on project config.

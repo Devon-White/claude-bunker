@@ -3,10 +3,10 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/spf13/cobra"
 
 	"github.com/Devon-White/claude-bunker/internal/config"
@@ -62,6 +62,6 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	}
 	defer reader.Close()
 
-	_, _ = io.Copy(os.Stdout, reader)
+	_, _ = stdcopy.StdCopy(os.Stdout, os.Stderr, reader)
 	return nil
 }

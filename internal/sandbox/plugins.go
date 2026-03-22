@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/docker/docker/client"
 
@@ -85,8 +86,8 @@ func ExtractPluginDomains(workspace, pluginLevel string) []string {
 }
 
 // SeedPlugins copies plugin files and configs into the running container.
-func SeedPlugins(ctx context.Context, cli *client.Client, containerID, workspace, pluginLevel string, logW io.Writer) error {
-	if !config.PluginLevelAtLeast(pluginLevel, config.PluginLevelUser) {
+func SeedPlugins(ctx context.Context, cli *client.Client, opts SeedOpts) error {
+	if !config.PluginLevelAtLeast(opts.PluginLevel, config.PluginLevelUser) {
 		return nil // "project" is a no-op — .mcp.json is already bind-mounted via workspace
 	}
 
@@ -106,10 +107,10 @@ func SeedPlugins(ctx context.Context, cli *client.Client, containerID, workspace
 
 	settingsData, err := os.ReadFile(hostSettingsJSON)
 	if err != nil {
-		fmt.Fprintf(logW, "[claude-bunker] WARNING: reading ~/.claude/settings.json: %v\n", err)
+		fmt.Fprintf(opts.LogW, "[claude-bunker] WARNING: reading ~/.claude/settings.json: %v\n", err)
 	} else {
-		if err := copyFilteredSettings(ctx, cli, containerID, settingsData, containerSettingsJSON, logW); err != nil {
-			fmt.Fprintf(logW, "[claude-bunker] WARNING: copying settings.json plugin keys: %v\n", err)
+		if err := copyFilteredSettings(ctx, cli, opts.ContainerID, settingsData, containerSettingsJSON, opts.LogW); err != nil {
+			fmt.Fprintf(opts.LogW, "[claude-bunker] WARNING: copying settings.json plugin keys: %v\n", err)
 		}
 		runtimeChecks = append(runtimeChecks, collectStdioRuntimes(settingsData, runtimeSeen)...)
 	}
@@ -118,8 +119,8 @@ func SeedPlugins(ctx context.Context, cli *client.Client, containerID, workspace
 	containerClaudeJSON := container.ContainerHome + "/.claude.json"
 	userClaudeJSON := filepath.Join(home, ".claude.json")
 	if claudeData, err := os.ReadFile(userClaudeJSON); err == nil {
-		if err := copyFilteredClaudeJSON(ctx, cli, containerID, claudeData, containerClaudeJSON, logW); err != nil {
-			fmt.Fprintf(logW, "[claude-bunker] WARNING: copying ~/.claude.json: %v\n", err)
+		if err := copyFilteredClaudeJSON(ctx, cli, opts.ContainerID, claudeData, containerClaudeJSON, opts.LogW); err != nil {
+			fmt.Fprintf(opts.LogW, "[claude-bunker] WARNING: copying ~/.claude.json: %v\n", err)
 		}
 	}
 
@@ -129,11 +130,10 @@ func SeedPlugins(ctx context.Context, cli *client.Client, containerID, workspace
 	pluginsDir := filepath.Join(home, ".claude", "plugins")
 	containerPluginsDir := container.ContainerHome + "/.claude/plugins"
 	if info, err := os.Stat(pluginsDir); err == nil && info.IsDir() {
-		if _, err := container.ExecNonInteractive(ctx, cli, containerID, container.RootUser,
-			[]string{"mkdir", "-p", containerPluginsDir}); err != nil {
-			fmt.Fprintf(logW, "[claude-bunker] WARNING: mkdir plugins dir: %v\n", err)
+		if err := container.EnsureContainerDir(ctx, cli, opts.ContainerID, containerPluginsDir); err != nil {
+			fmt.Fprintf(opts.LogW, "[claude-bunker] WARNING: mkdir plugins dir: %v\n", err)
 		}
-		if err := container.CopyDirToContainerExec(ctx, cli, containerID, pluginsDir, containerPluginsDir,
+		if err := container.CopyDirToContainerExec(ctx, cli, opts.ContainerID, pluginsDir, containerPluginsDir,
 			func(relPath string, isDir bool) bool {
 				base := filepath.Base(relPath)
 				// Skip .git, repos, and marketplaces dirs — these are git
@@ -148,41 +148,41 @@ func SeedPlugins(ctx context.Context, cli *client.Client, containerID, workspace
 				ext := filepath.Ext(relPath)
 				return ext == ".pid" || ext == ".log"
 			}); err != nil {
-			fmt.Fprintf(logW, "[claude-bunker] WARNING: copying plugins dir: %v\n", err)
+			fmt.Fprintf(opts.LogW, "[claude-bunker] WARNING: copying plugins dir: %v\n", err)
 		} else {
-			fmt.Fprintf(logW, "[claude-bunker] Copied plugins directory\n")
+			fmt.Fprintf(opts.LogW, "[claude-bunker] Copied plugins directory\n")
 		}
 		// Rewrite installPath values in installed_plugins.json from host
 		// paths (e.g. C:\Users\devon\.claude\plugins\...) to container paths
-		rewritePluginPaths(ctx, cli, containerID, pluginsDir, containerPluginsDir, logW)
+		rewritePluginPaths(ctx, cli, opts.ContainerID, pluginsDir, containerPluginsDir, opts.LogW)
 		// Collect stdio runtimes from plugin cache .mcp.json files
 		pluginCacheDir := filepath.Join(pluginsDir, "cache")
 		runtimeChecks = append(runtimeChecks, collectPluginCacheRuntimes(pluginCacheDir, runtimeSeen)...)
 	}
 
 	// "all" level: copy managed-mcp.json
-	if config.PluginLevelAtLeast(pluginLevel, config.PluginLevelAll) {
+	if config.PluginLevelAtLeast(opts.PluginLevel, config.PluginLevelAll) {
 		if p := hostManagedMCPPath(); p != "" {
 			if data, err := os.ReadFile(p); err == nil {
 				const managedMCPPath = container.ManagedSettingsDir + "/managed-mcp.json"
-				if err := container.CopyContentToContainer(ctx, cli, containerID, data, managedMCPPath); err != nil {
-					fmt.Fprintf(logW, "[claude-bunker] WARNING: copying managed-mcp.json: %v\n", err)
+				if err := container.CopyContentToContainer(ctx, cli, opts.ContainerID, data, managedMCPPath); err != nil {
+					fmt.Fprintf(opts.LogW, "[claude-bunker] WARNING: copying managed-mcp.json: %v\n", err)
 				} else {
-					fmt.Fprintf(logW, "[claude-bunker] Copied managed-mcp.json\n")
+					fmt.Fprintf(opts.LogW, "[claude-bunker] Copied managed-mcp.json\n")
 				}
 			}
 		}
 	}
 
 	// Batch-verify all collected stdio MCP server runtimes in one exec
-	batchCheckRuntimes(ctx, cli, containerID, runtimeChecks, logW)
+	batchCheckRuntimes(ctx, cli, opts.ContainerID, runtimeChecks, opts.LogW)
 
 	// Fix ownership on all plugin-related files (settings.json, plugins dir, ~/.claude.json)
-	if _, err := container.ExecNonInteractive(ctx, cli, containerID, container.RootUser,
-		[]string{"sh", "-c", "chown -R " + container.ContainerUserGroup + " " +
-			container.ContainerHome + "/.claude " +
-			container.ContainerHome + "/.claude.json 2>/dev/null; true"}); err != nil {
-		fmt.Fprintf(logW, "[claude-bunker] WARNING: chown plugin files: %v\n", err)
+	if err := container.ChownRecursive(ctx, cli, opts.ContainerID, container.ContainerHome+"/.claude"); err != nil {
+		fmt.Fprintf(opts.LogW, "[claude-bunker] WARNING: chown plugin files: %v\n", err)
+	}
+	if err := container.ChownRecursive(ctx, cli, opts.ContainerID, container.ContainerHome+"/.claude.json"); err != nil {
+		// ~/.claude.json may not exist — ignore errors silently
 	}
 
 	return nil
@@ -363,6 +363,9 @@ type pluginCacheEntry struct {
 	data       []byte
 }
 
+// pluginCacheMu protects pluginCacheResults from concurrent access.
+var pluginCacheMu sync.Mutex
+
 // pluginCacheResults caches the output of walkPluginCacheMCP so that multiple
 // callers (ExtractPluginDomains and SeedPlugins) avoid redundant directory walks
 // within the same process.
@@ -375,6 +378,9 @@ var pluginCacheResults struct {
 // all .mcp.json entries. The structure is: cache/<marketplace>/<plugin>/<version>/.mcp.json
 // Results are cached per directory path to avoid redundant walks.
 func walkPluginCacheMCP(cacheDir string) []pluginCacheEntry {
+	pluginCacheMu.Lock()
+	defer pluginCacheMu.Unlock()
+
 	if pluginCacheResults.dir == cacheDir && pluginCacheResults.entries != nil {
 		return pluginCacheResults.entries
 	}

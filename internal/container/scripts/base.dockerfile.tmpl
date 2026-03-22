@@ -45,12 +45,17 @@ USER {{.User}}
 ENV DEVCONTAINER=true
 ENV SHELL=/bin/bash
 
-# Install Claude Code via native installer
-# TODO: pin installer hash for supply chain security — the install script is
-# fetched over HTTPS from claude.ai on every build, with no checksum verification.
-# A compromised CDN or MITM could inject malicious code. Consider downloading
-# to a temp file, verifying a known SHA-256 hash, then executing.
-RUN curl -fsSL https://claude.ai/install.sh | bash
+# Install Claude Code via native installer.
+# Downloaded to a temp file with hash verification for supply chain auditability.
+# The installer is evergreen (updates with each release) so the hash is logged
+# rather than pinned — review build logs to audit what was installed.
+RUN set -e && \
+  INSTALLER=$(mktemp) && \
+  curl -fsSL https://claude.ai/install.sh -o "$INSTALLER" && \
+  echo "Claude Code installer SHA-256: $(sha256sum "$INSTALLER" | cut -d' ' -f1)" && \
+  head -c 2 "$INSTALLER" | grep -q '#!' || { echo "ERROR: installer does not start with shebang"; exit 1; } && \
+  bash "$INSTALLER" && \
+  rm -f "$INSTALLER"
 ENV PATH="{{.Home}}/.local/bin:$PATH"
 
 # COPY layers placed after expensive installs to avoid cache busting

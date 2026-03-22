@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"os"
 	"testing"
 )
 
@@ -9,7 +8,7 @@ func TestDetectProxyEnv_Empty(t *testing.T) {
 	// Clear any proxy env vars that might be set
 	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy",
 		"NODE_EXTRA_CA_CERTS", "CLAUDE_CODE_CLIENT_CERT", "CLAUDE_CODE_CLIENT_KEY", "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE"} {
-		os.Unsetenv(k)
+		t.Setenv(k, "")
 	}
 
 	cfg := DetectProxyEnv()
@@ -22,8 +21,7 @@ func TestDetectProxyEnv_Empty(t *testing.T) {
 }
 
 func TestDetectProxyEnv_WithProxy(t *testing.T) {
-	os.Setenv("HTTPS_PROXY", "http://proxy.example.com:8080")
-	defer os.Unsetenv("HTTPS_PROXY")
+	t.Setenv("HTTPS_PROXY", "http://proxy.example.com:8080")
 
 	cfg := DetectProxyEnv()
 	if !cfg.HasProxy() {
@@ -38,9 +36,8 @@ func TestDetectProxyEnv_WithProxy(t *testing.T) {
 }
 
 func TestDetectProxyEnv_LowercaseFallback(t *testing.T) {
-	os.Unsetenv("HTTPS_PROXY")
-	os.Setenv("https_proxy", "http://lower.example.com:3128")
-	defer os.Unsetenv("https_proxy")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("https_proxy", "http://lower.example.com:3128")
 
 	cfg := DetectProxyEnv()
 	if cfg.HTTPSProxy != "http://lower.example.com:3128" {

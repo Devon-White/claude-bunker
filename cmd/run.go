@@ -17,6 +17,7 @@ import (
 
 	"github.com/Devon-White/claude-bunker/internal/config"
 	"github.com/Devon-White/claude-bunker/internal/container"
+	bunkerlog "github.com/Devon-White/claude-bunker/internal/log"
 	"github.com/Devon-White/claude-bunker/internal/platform"
 	"github.com/Devon-White/claude-bunker/internal/sandbox"
 )
@@ -47,9 +48,7 @@ type runner struct {
 	containerID   string
 	imageTag      string
 	extraDomains  []string
-	ghToken       string
-	apiKey        string
-	oauthToken    string
+	auth          container.AuthTokens
 
 	execID   string              // Docker exec ID from ExecInteractive, used for cleanup session detection
 	reused   bool                // true when attaching to an already-running container with matching fingerprints
@@ -113,14 +112,12 @@ func resolveWorkspace() string {
 // bunkerFlags holds claude-bunker-specific flags extracted from the args
 // before the remaining args are passed through to claude/bash.
 type bunkerFlags struct {
-	ghToken    string
-	apiKey     string
-	oauthToken string
-	quiet      bool
-	verbose    bool
-	keep       bool
-	rebuild    bool
-	remaining  []string
+	auth      container.AuthTokens
+	quiet     bool
+	verbose   bool
+	keep      bool
+	rebuild   bool
+	remaining []string
 }
 
 // extractBunkerFlags pulls claude-bunker-specific flags from the arg list.
@@ -130,9 +127,9 @@ type bunkerFlags struct {
 func extractBunkerFlags(args []string) bunkerFlags {
 	var f bunkerFlags
 	flagMap := map[string]*string{
-		"--gh-token":    &f.ghToken,
-		"--api-key":     &f.apiKey,
-		"--oauth-token": &f.oauthToken,
+		"--gh-token":    &f.auth.GhToken,
+		"--api-key":     &f.auth.ApiKey,
+		"--oauth-token": &f.auth.OAuthToken,
 	}
 	boolFlags := map[string]*bool{
 		"--verbose": &f.verbose,
@@ -198,6 +195,10 @@ func runInSandbox(passedArgs []string, execCmd string) error {
 	} else if flags.verbose {
 		verbosity = 1
 	}
+
+	// Wire internal log package to use styled output with verbosity control
+	bunkerlog.WarnFunc = warn
+	bunkerlog.InfoFunc = info
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -271,17 +272,15 @@ func (r *runner) loadConfig(flags bunkerFlags) {
 	r.projectCfg = cfg
 
 	// Resolve auth tokens: CLI flags > config > env vars
-	r.ghToken = flags.ghToken
-	if r.ghToken == "" {
-		r.ghToken = r.projectCfg.GhToken
+	r.auth = flags.auth
+	if r.auth.GhToken == "" {
+		r.auth.GhToken = r.projectCfg.GhToken
 	}
-	r.apiKey = flags.apiKey
-	if r.apiKey == "" {
-		r.apiKey = os.Getenv("ANTHROPIC_API_KEY")
+	if r.auth.ApiKey == "" {
+		r.auth.ApiKey = os.Getenv("ANTHROPIC_API_KEY")
 	}
-	r.oauthToken = flags.oauthToken
-	if r.oauthToken == "" {
-		r.oauthToken = os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
+	if r.auth.OAuthToken == "" {
+		r.auth.OAuthToken = os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
 	}
 
 	r.proxyCfg = sandbox.DetectProxyEnv()
@@ -343,11 +342,17 @@ func (r *runner) resolveContainer() {
 		} else {
 			info("Image configuration changed — rebuilding sandbox...")
 		}
-		_ = container.Stop(r.ctx, r.cli, id)
-		_ = container.Remove(r.ctx, r.cli, id)
+		if err := container.Stop(r.ctx, r.cli, id); err != nil {
+			verbose("Stop existing container: " + err.Error())
+		}
+		if err := container.Remove(r.ctx, r.cli, id); err != nil {
+			verbose("Remove existing container: " + err.Error())
+		}
 	} else {
 		if id, err := container.FindByLabel(r.ctx, r.cli, r.containerName); err == nil && id != "" {
-			_ = container.Remove(r.ctx, r.cli, id)
+			if err := container.Remove(r.ctx, r.cli, id); err != nil {
+				verbose("Remove stopped container: " + err.Error())
+			}
 		}
 	}
 }
@@ -390,9 +395,7 @@ func (r *runner) buildAndCreate() {
 		ImageTag:      r.imageTag,
 		Workspace:     r.workspace,
 		ProjectCfg:    r.projectCfg,
-		GhToken:       r.ghToken,
-		ApiKey:        r.apiKey,
-		OAuthToken:    r.oauthToken,
+		Auth:          r.auth,
 		ExtraEnv:      extraEnv,
 	})
 	if err != nil {
@@ -401,15 +404,13 @@ func (r *runner) buildAndCreate() {
 	r.containerID = id
 
 	if r.projectCfg.PostStartCommand != "" {
-		fmt.Fprintf(os.Stderr, "[claude-bunker] Running postStartCommand from config: %s\n", r.projectCfg.PostStartCommand)
+		info(fmt.Sprintf("Running postStartCommand from config: %s", r.projectCfg.PostStartCommand))
 	}
 
 	if err := container.RunPostStart(r.ctx, r.cli, r.containerID, container.RunPostStartOpts{
 		ExtraDomains:     r.extraDomains,
 		PostStartCommand: r.projectCfg.PostStartCommand,
-		GhToken:          r.ghToken,
-		ApiKey:           r.apiKey,
-		OAuthToken:       r.oauthToken,
+		Auth:             r.auth,
 	}); err != nil {
 		die("Post-start failed: " + err.Error())
 	}
@@ -421,7 +422,7 @@ func (r *runner) buildAndCreate() {
 		}
 	}
 
-	if err := config.SaveCombinedFingerprint(r.buildInput, r.containerName); err != nil {
+	if err := r.fpResult.Save(r.containerName); err != nil {
 		warn("Failed to save fingerprint: " + err.Error())
 	}
 }
@@ -444,8 +445,14 @@ func (r *runner) logWriter() io.Writer {
 // seedSettings copies settings and session history into the container.
 func (r *runner) seedSettings() {
 	log := r.logWriter()
-
-	if err := sandbox.SeedSettings(r.ctx, r.cli, r.containerID, r.workspace, r.extraDomains, r.projectCfg.PluginLevel(), log); err != nil {
+	opts := sandbox.SeedOpts{
+		ContainerID:  r.containerID,
+		Workspace:    r.workspace,
+		ExtraDomains: r.extraDomains,
+		PluginLevel:  r.projectCfg.PluginLevel(),
+		LogW:         log,
+	}
+	if err := sandbox.SeedSettings(r.ctx, r.cli, opts); err != nil {
 		warn("Failed to seed settings: " + err.Error())
 	}
 	if r.projectCfg.ShouldSeedHistory() {
@@ -459,11 +466,7 @@ func (r *runner) seedSettings() {
 // container. Tokens on tmpfs may be stale or missing after container restart.
 // Unlike buildAndCreate, this skips firewall/git/domain setup (already done).
 func (r *runner) reinjectAuthSecrets() {
-	if err := container.InjectAuthSecrets(r.ctx, r.cli, r.containerID, container.RunPostStartOpts{
-		GhToken:    r.ghToken,
-		ApiKey:     r.apiKey,
-		OAuthToken: r.oauthToken,
-	}); err != nil {
+	if err := container.InjectAuthSecrets(r.ctx, r.cli, r.containerID, r.auth); err != nil {
 		warn("Failed to re-inject auth secrets: " + err.Error())
 	}
 
@@ -494,7 +497,7 @@ func (r *runner) setupSignals() {
 // exec runs the command interactively in the container and returns the exit code.
 func (r *runner) exec(execCmd string, passedArgs []string) int {
 	var execCommand []string
-	if execCmd == "claude" && (r.apiKey != "" || r.oauthToken != "" || r.ghToken != "") {
+	if execCmd == "claude" && r.auth.HasSecrets() {
 		execCommand = append([]string{container.AuthWrapperPath, execCmd}, passedArgs...)
 	} else {
 		execCommand = append([]string{execCmd}, passedArgs...)

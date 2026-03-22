@@ -47,3 +47,17 @@ const AuthWrapperPath = ContainerHome + "/.claude-auth-wrapper.sh"
 
 // LabelKey is the Docker label used to identify claude-bunker containers.
 const LabelKey = "claude-bunker"
+
+// AuthTokens holds authentication credentials passed between the CLI and
+// container setup. Consolidates the GhToken/ApiKey/OAuthToken triplet that
+// was previously repeated across multiple structs.
+type AuthTokens struct {
+	GhToken    string // GitHub fine-grained PAT for git auth
+	ApiKey     string // Anthropic API key for Claude auth
+	OAuthToken string // Claude OAuth token
+}
+
+// HasSecrets returns true if any auth tokens are set.
+func (a AuthTokens) HasSecrets() bool {
+	return a.GhToken != "" || a.ApiKey != "" || a.OAuthToken != ""
+}

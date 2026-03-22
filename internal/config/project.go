@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+
+	"github.com/Devon-White/claude-bunker/internal/log"
 )
 
 // ProjectConfig represents the unified claude-bunker configuration.
@@ -89,7 +92,7 @@ func LoadProjectConfig(workspace string) (ProjectConfig, error) {
 	// Warn if ghToken looks like a literal token value rather than an env var reference.
 	// This catches accidental credential commits — ghToken should normally be "${GH_TOKEN}" or similar.
 	if cfg.GhToken != "" && !strings.Contains(cfg.GhToken, "${") && !strings.HasPrefix(cfg.GhToken, "$") {
-		fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: ghToken in config.json appears to be a literal value, not an env var reference (e.g. \"${GH_TOKEN}\"). Avoid committing credentials to version control.\n")
+		log.Warn("ghToken in config.json appears to be a literal value, not an env var reference (e.g. \"${GH_TOKEN}\"). Avoid committing credentials to version control.")
 	}
 
 	// Normalize domain whitespace before validation
@@ -102,11 +105,19 @@ func LoadProjectConfig(workspace string) (ProjectConfig, error) {
 	return cfg, nil
 }
 
+// validDomainChars matches only characters that are safe in domain patterns.
+// Rejects shell metacharacters (;|$`&<>(){}!#) that could be exploited if
+// a domain string flows into shell commands (e.g. firewall scripts).
+var validDomainChars = regexp.MustCompile(`^[a-zA-Z0-9.*\-]+$`)
+
 // IsValidDomain checks whether a single domain pattern is valid for firewall
 // allowlisting. It rejects empty strings, malformed wildcards, patterns with
-// fewer than 2 segments, and empty segments.
+// fewer than 2 segments, empty segments, and shell metacharacters.
 func IsValidDomain(d string) bool {
 	if d == "" {
+		return false
+	}
+	if !validDomainChars.MatchString(d) {
 		return false
 	}
 	if strings.HasPrefix(d, "*") && !strings.HasPrefix(d, "*.") {

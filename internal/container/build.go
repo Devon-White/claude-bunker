@@ -199,7 +199,6 @@ func runBuild(ctx context.Context, cli *client.Client, imageTag string, tarBuf *
 			if streamOutput {
 				fmt.Print(msg.Stream)
 			} else if logFn != nil && strings.HasPrefix(msg.Stream, "Step ") {
-				// Emit step progress in non-verbose mode
 				logFn(strings.TrimSpace(msg.Stream))
 			}
 		}

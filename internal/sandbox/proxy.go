@@ -12,6 +12,7 @@ import (
 	"github.com/docker/docker/client"
 
 	"github.com/Devon-White/claude-bunker/internal/container"
+	"github.com/Devon-White/claude-bunker/internal/log"
 )
 
 // ProxyConfig holds proxy-related configuration detected from the host environment.
@@ -59,22 +60,33 @@ func DetectProxyEnv() ProxyConfig {
 		}
 	}
 
+	// Warn if proxy URL contains embedded credentials (user:password@host).
+	// These will be visible in docker inspect and /proc/*/environ.
+	// Most enterprise proxies use cert-based auth instead.
+	if proxyURL != "" {
+		if u, err := url.Parse(ensureScheme(proxyURL)); err == nil && u.User != nil {
+			if _, hasPass := u.User.Password(); hasPass {
+				log.Warn("proxy URL contains embedded credentials which will be visible in container env vars. Consider using certificate-based proxy authentication instead.")
+			}
+		}
+	}
+
 	// Validate cert file paths exist — warn if set but missing
 	if cfg.NodeExtraCACerts != "" {
 		if _, err := os.Stat(cfg.NodeExtraCACerts); err != nil {
-			fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: NODE_EXTRA_CA_CERTS path not found: %s\n", cfg.NodeExtraCACerts)
+			log.Warnf("NODE_EXTRA_CA_CERTS path not found: %s", cfg.NodeExtraCACerts)
 			cfg.NodeExtraCACerts = ""
 		}
 	}
 	if cfg.ClientCert != "" {
 		if _, err := os.Stat(cfg.ClientCert); err != nil {
-			fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: CLAUDE_CODE_CLIENT_CERT path not found: %s\n", cfg.ClientCert)
+			log.Warnf("CLAUDE_CODE_CLIENT_CERT path not found: %s", cfg.ClientCert)
 			cfg.ClientCert = ""
 		}
 	}
 	if cfg.ClientKey != "" {
 		if _, err := os.Stat(cfg.ClientKey); err != nil {
-			fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: CLAUDE_CODE_CLIENT_KEY path not found: %s\n", cfg.ClientKey)
+			log.Warnf("CLAUDE_CODE_CLIENT_KEY path not found: %s", cfg.ClientKey)
 			cfg.ClientKey = ""
 		}
 	}
@@ -134,8 +146,7 @@ func InjectProxyCerts(ctx context.Context, cli *client.Client, containerID strin
 	const certsDir = container.SecretsDir + "/certs"
 
 	// Create certs directory
-	if _, err := container.ExecNonInteractive(ctx, cli, containerID, container.RootUser,
-		[]string{"mkdir", "-p", certsDir}); err != nil {
+	if err := container.EnsureContainerDir(ctx, cli, containerID, certsDir); err != nil {
 		return fmt.Errorf("creating certs dir: %w", err)
 	}
 
@@ -145,6 +156,8 @@ func InjectProxyCerts(ctx context.Context, cli *client.Client, containerID strin
 		cfg.ClientKey,
 	}
 
+	// Batch all cert + passphrase files into a single CopyMultipleToContainer call
+	var files []container.FileEntry
 	for _, hostPath := range certPaths {
 		if hostPath == "" {
 			continue
@@ -156,9 +169,7 @@ func InjectProxyCerts(ctx context.Context, cli *client.Client, containerID strin
 		}
 		basename := filepath.Base(hostPath)
 		containerPath := certsDir + "/" + basename
-		if err := container.CopyContentToContainer(ctx, cli, containerID, data, containerPath); err != nil {
-			return fmt.Errorf("copying cert %s: %w", basename, err)
-		}
+		files = append(files, container.FileEntry{Content: data, Path: containerPath, Mode: 0644})
 		fmt.Fprintf(logW, "[claude-bunker] Copied cert %s → %s\n", basename, containerPath)
 	}
 
@@ -166,20 +177,18 @@ func InjectProxyCerts(ctx context.Context, cli *client.Client, containerID strin
 	// exposure via /proc/*/environ and docker inspect.
 	if cfg.ClientKeyPassphrase != "" {
 		passphrasePath := container.SecretsDir + "/client_key_passphrase"
-		if err := container.CopyContentToContainer(ctx, cli, containerID, []byte(cfg.ClientKeyPassphrase), passphrasePath); err != nil {
-			return fmt.Errorf("writing client key passphrase: %w", err)
-		}
-		// Set permissions: readable only by the container user
-		if _, err := container.ExecNonInteractive(ctx, cli, containerID, container.RootUser,
-			[]string{"sh", "-c", fmt.Sprintf("chmod 400 %s && chown %s %s", passphrasePath, container.ContainerUserGroup, passphrasePath)}); err != nil {
-			fmt.Fprintf(logW, "[claude-bunker] WARNING: chmod passphrase: %v\n", err)
-		}
+		files = append(files, container.FileEntry{Content: []byte(cfg.ClientKeyPassphrase), Path: passphrasePath, Mode: 0400})
 		fmt.Fprintf(logW, "[claude-bunker] Wrote client key passphrase → %s\n", passphrasePath)
 	}
 
+	if len(files) > 0 {
+		if err := container.CopyMultipleToContainer(ctx, cli, containerID, files); err != nil {
+			return fmt.Errorf("copying certs: %w", err)
+		}
+	}
+
 	// Fix ownership
-	if _, err := container.ExecNonInteractive(ctx, cli, containerID, container.RootUser,
-		[]string{"chown", "-R", container.ContainerUserGroup, certsDir}); err != nil {
+	if err := container.ChownRecursive(ctx, cli, containerID, certsDir); err != nil {
 		fmt.Fprintf(logW, "[claude-bunker] WARNING: chown certs: %v\n", err)
 	}
 
@@ -196,14 +205,18 @@ func coalesceEnv(keys ...string) string {
 	return ""
 }
 
+// ensureScheme adds http:// if no scheme is present, for URL parsing.
+func ensureScheme(rawURL string) string {
+	if !strings.Contains(rawURL, "://") {
+		return "http://" + rawURL
+	}
+	return rawURL
+}
+
 // extractHost parses a URL and returns the hostname (without port).
 // If parsing fails, attempts to extract host from common proxy formats.
 func extractHost(rawURL string) string {
-	// Ensure scheme for url.Parse
-	if !strings.Contains(rawURL, "://") {
-		rawURL = "http://" + rawURL
-	}
-	u, err := url.Parse(rawURL)
+	u, err := url.Parse(ensureScheme(rawURL))
 	if err != nil {
 		return ""
 	}

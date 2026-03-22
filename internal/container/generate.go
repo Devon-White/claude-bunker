@@ -40,7 +40,7 @@ func GenerateDockerfile(opts DockerfileOpts) (string, error) {
 	var b strings.Builder
 	b.WriteString(opts.BaseDockerfile)
 
-	hasLayers := len(opts.Features) > 0 || len(opts.AptPackages) > 0 || len(opts.UserEnv) > 0
+	hasLayers := len(opts.Features) > 0 || len(opts.AptPackages) > 0 || len(opts.UserEnv) > 0 || opts.OnCreateCommand != ""
 	if hasLayers {
 		b.WriteString("\n\n# --- claude-bunker: generated layers ---\n")
 	}
@@ -57,7 +57,15 @@ func GenerateDockerfile(opts DockerfileOpts) (string, error) {
 		}
 		b.WriteString("\n# Apt packages\n")
 		b.WriteString("USER root\n")
-		b.WriteString("RUN apt-get update && apt-get install -y --no-install-recommends \\\n")
+		// If the base Dockerfile already ran apt-get update (local build), the
+		// package lists are cached from an earlier layer, so skip the redundant
+		// ~30MB re-download. For GHCR-pulled bases the lists were cleaned, so
+		// we must fetch them.
+		if strings.Contains(opts.BaseDockerfile, "apt-get update") {
+			b.WriteString("RUN apt-get install -y --no-install-recommends \\\n")
+		} else {
+			b.WriteString("RUN apt-get update && apt-get install -y --no-install-recommends \\\n")
+		}
 		for _, pkg := range sorted {
 			b.WriteString(fmt.Sprintf("  %s \\\n", pkg))
 		}
@@ -93,7 +101,13 @@ func GenerateDockerfile(opts DockerfileOpts) (string, error) {
 			f.ID, f.ID))
 	}
 
-	// onCreateCommand: arbitrary shell command baked into the image
+	// onCreateCommand: arbitrary shell command baked into the image.
+	//
+	// TRUST BOUNDARY: onCreateCommand runs during `docker build` with UNRESTRICTED
+	// network access — the iptables firewall is only configured at container runtime,
+	// not build time. A malicious config.json could exfiltrate data during build.
+	// Users should review config.json before running claude-bunker on untrusted repos.
+	// This matches the devcontainer trust model (VS Code has the same issue).
 	if opts.OnCreateCommand != "" {
 		b.WriteString("\n# onCreateCommand\n")
 		b.WriteString("USER root\n")

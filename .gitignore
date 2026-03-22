@@ -20,6 +20,17 @@ claude-bunker.exe
 claude-bunker.exe~
 dist/
 
+# Sandbox dotfiles — Claude Code's bubblewrap creates these in the workspace.
+# The container bind-mounts /dev/null over them, but they can leak if the
+# container exits uncleanly or the bind-mount fails.
+.bash_profile
+.bashrc
+.gitconfig
+.profile
+.ripgreprc
+.zprofile
+.zshrc
+
 # OS junk
 .DS_Store
 Thumbs.db

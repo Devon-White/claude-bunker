@@ -11,6 +11,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 
+	"github.com/Devon-White/claude-bunker/internal/log"
 	"github.com/Devon-White/claude-bunker/internal/platform"
 )
 
@@ -84,7 +85,7 @@ func ExecInteractive(ctx context.Context, cli *client.Client, containerID, user 
 	select {
 	case err := <-outputDone:
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: output stream error: %v\n", err)
+			log.Warnf("output stream error: %v", err)
 		}
 	case <-ctx.Done():
 		return -1, "", ctx.Err()
@@ -99,10 +100,14 @@ func ExecInteractive(ctx context.Context, cli *client.Client, containerID, user 
 	return inspect.ExitCode, execResp.ID, nil
 }
 
-// ExecNonInteractive runs a command without TTY and returns the output.
-func ExecNonInteractive(ctx context.Context, cli *client.Client, containerID, user string, cmd []string) (string, error) {
+// execCore is the shared implementation for non-interactive Docker exec operations.
+// It creates an exec, optionally pipes stdin data, captures stdout/stderr, and
+// returns all output fields so callers can format errors differently.
+func execCore(ctx context.Context, cli *client.Client, containerID, user string, cmd []string, stdin []byte) (stdout, stderr string, exitCode int, err error) {
+	attachStdin := len(stdin) > 0
 	execCfg := container.ExecOptions{
 		User:         user,
+		AttachStdin:  attachStdin,
 		AttachStdout: true,
 		AttachStderr: true,
 		Cmd:          cmd,
@@ -110,31 +115,64 @@ func ExecNonInteractive(ctx context.Context, cli *client.Client, containerID, us
 
 	execResp, err := cli.ContainerExecCreate(ctx, containerID, execCfg)
 	if err != nil {
-		return "", fmt.Errorf("creating exec: %w", err)
+		return "", "", -1, fmt.Errorf("creating exec: %w", err)
 	}
 
 	attachResp, err := cli.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
 	if err != nil {
-		return "", fmt.Errorf("attaching exec: %w", err)
+		return "", "", -1, fmt.Errorf("attaching exec: %w", err)
 	}
 	defer attachResp.Close()
 
+	// If stdin data was provided, write it and close the write side so the
+	// command sees EOF.
+	if attachStdin {
+		if _, err := attachResp.Conn.Write(stdin); err != nil {
+			return "", "", -1, fmt.Errorf("writing to exec stdin: %w", err)
+		}
+		if err := attachResp.CloseWrite(); err != nil {
+			return "", "", -1, fmt.Errorf("closing exec stdin: %w", err)
+		}
+	}
+
 	// Without TTY, Docker multiplexes stdout/stderr with 8-byte frame headers.
 	// stdcopy.StdCopy demultiplexes the stream into separate stdout/stderr buffers.
-	var stdout, stderr bytes.Buffer
-	if _, err := stdcopy.StdCopy(&stdout, &stderr, attachResp.Reader); err != nil {
-		return "", fmt.Errorf("reading exec output: %w", err)
+	var stdoutBuf, stderrBuf bytes.Buffer
+	if _, err := stdcopy.StdCopy(&stdoutBuf, &stderrBuf, attachResp.Reader); err != nil {
+		return "", "", -1, fmt.Errorf("reading exec output: %w", err)
 	}
 
 	inspect, err := cli.ContainerExecInspect(ctx, execResp.ID)
 	if err != nil {
-		return stdout.String(), fmt.Errorf("inspecting exec: %w", err)
+		return stdoutBuf.String(), stderrBuf.String(), -1, fmt.Errorf("inspecting exec: %w", err)
 	}
 
-	if inspect.ExitCode != 0 {
-		combined := stdout.String() + stderr.String()
-		return combined, fmt.Errorf("command exited with code %d: %s", inspect.ExitCode, combined)
-	}
+	return stdoutBuf.String(), stderrBuf.String(), inspect.ExitCode, nil
+}
 
-	return stdout.String(), nil
+// ExecNonInteractive runs a command without TTY and returns the output.
+func ExecNonInteractive(ctx context.Context, cli *client.Client, containerID, user string, cmd []string) (string, error) {
+	stdout, stderr, exitCode, err := execCore(ctx, cli, containerID, user, cmd, nil)
+	if err != nil {
+		return "", err
+	}
+	if exitCode != 0 {
+		combined := stdout + stderr
+		return combined, fmt.Errorf("command exited with code %d: %s", exitCode, combined)
+	}
+	return stdout, nil
+}
+
+// EnsureContainerDir creates a directory and sets ownership in a single exec.
+func EnsureContainerDir(ctx context.Context, cli *client.Client, containerID, dir string) error {
+	_, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
+		[]string{"sh", "-c", `mkdir -p "$1" && chown "$2" "$1"`, "_", dir, ContainerUserGroup})
+	return err
+}
+
+// ChownRecursive sets ownership recursively on a container path.
+func ChownRecursive(ctx context.Context, cli *client.Client, containerID, dir string) error {
+	_, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
+		[]string{"chown", "-R", ContainerUserGroup, dir})
+	return err
 }

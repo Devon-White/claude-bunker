@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	"github.com/docker/docker/client"
 
 	"github.com/Devon-White/claude-bunker/internal/config"
+	"github.com/Devon-White/claude-bunker/internal/log"
 )
 
 // seccompProfile is a custom seccomp profile that allows most syscalls but
@@ -64,6 +64,10 @@ var seccompProfile = func() string {
 					"lookup_dcookie",
 					"kcmp",
 					"open_by_handle_at",
+					"ptrace",
+					"process_vm_readv",
+					"process_vm_writev",
+					"userfaultfd",
 				},
 				Action: "SCMP_ACT_ERRNO",
 			},
@@ -124,9 +128,7 @@ type CreateAndStartOpts struct {
 	ImageTag      string
 	Workspace     string
 	ProjectCfg    config.ProjectConfig
-	GhToken       string            // GitHub fine-grained PAT for git auth (injected via tmpfs)
-	ApiKey        string            // Anthropic API key for Claude auth (injected via tmpfs)
-	OAuthToken    string            // Claude OAuth token for Claude auth (injected via tmpfs)
+	Auth          AuthTokens
 	ExtraEnv      map[string]string // additional env vars to inject (proxy, plugin flags, etc.)
 }
 
@@ -190,7 +192,7 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 	hasProxyCerts := opts.ExtraEnv["NODE_EXTRA_CA_CERTS"] != "" ||
 		opts.ExtraEnv["CLAUDE_CODE_CLIENT_CERT"] != "" ||
 		opts.ExtraEnv["CLAUDE_CODE_CLIENT_KEY"] != ""
-	if opts.GhToken != "" || opts.ApiKey != "" || opts.OAuthToken != "" || hasProxyCerts {
+	if opts.Auth.HasSecrets() || hasProxyCerts {
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeTmpfs,
 			Target: SecretsDir,
@@ -278,6 +280,14 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 	// filesystem write restrictions that are the primary defense layer
 	// inside the container. The iptables firewall and managed-settings.json
 	// provide the outer defense layers.
+	//
+	// NET_ADMIN and NET_RAW capabilities are required for iptables firewall
+	// setup, which runs as root via ExecNonInteractive. These capabilities
+	// are NOT effective for the unprivileged claude-bunker user — Docker only
+	// grants effective capabilities to UID 0 processes (ambient capabilities
+	// are not set). A prompt injection that runs code as claude-bunker cannot
+	// modify iptables rules. If the bubblewrap sandbox is bypassed, the
+	// attacker would still need to escalate to root to exercise NET_ADMIN.
 	hostCfg := &container.HostConfig{
 		Mounts:  mounts,
 		CapAdd:  []string{"NET_ADMIN", "NET_RAW"},
@@ -304,38 +314,23 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 type RunPostStartOpts struct {
 	ExtraDomains     []string
 	PostStartCommand string
-	GhToken          string
-	ApiKey           string
-	OAuthToken       string
+	Auth             AuthTokens
 }
 
 // RunPostStart runs the post-start commands inside the container:
-// 1. git config safe.directory
-// 2. Write extra domains to temp file
-// 3. Run init-firewall.sh
-// 4. Copy host git identity
-// 5. Inject auth secrets (if provided)
-// 6. Run postStartCommand (if configured)
+// 1. Write domains file + batch pre-firewall setup (git config, domain lockdown)
+// 2. Run init-firewall.sh (standalone — must run after domain file exists)
+// 3. Batch post-firewall setup (refresh daemon + git identity)
+// 4. Inject auth secrets (if provided)
+// 5. Run postStartCommand (if configured)
+//
+// Steps are batched into as few Docker exec calls as possible to reduce
+// API round-trip overhead (~200ms per exec create+attach+inspect).
 func RunPostStart(ctx context.Context, cli *client.Client, containerID string, opts RunPostStartOpts) error {
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	// 1. Git safe directory (required for sandbox workspace access).
-	_, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
-		[]string{"git", "config", "--global", "--add", "safe.directory", ContainerWorkspace})
-	if err != nil {
-		return fmt.Errorf("git config: %w", err)
-	}
-
-	// HTTPS rewrite for GitHub — the container has no SSH keys, so rewrite
-	// git@github.com: URLs to HTTPS for Claude Code's plugin marketplace.
-	// Non-fatal: only affects SSH-based plugin installs.
-	if _, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
-		[]string{"git", "config", "--global", "url.https://github.com/.insteadOf", "git@github.com:"}); err != nil {
-		fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: git insteadOf config: %v\n", err)
-	}
-
-	// 2. Write all firewall domains (builtin + user extras) to temp file.
+	// 1a. Write all firewall domains (builtin + user extras) to temp file.
 	// The firewall script reads this file instead of maintaining its own list,
 	// keeping the Go code as the single source of truth for allowed domains.
 	allDomains := BuiltinDomains()
@@ -345,48 +340,78 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 		return fmt.Errorf("writing firewall domains: %w", err)
 	}
 
-	// 2b. Lock down the domains file so the container user cannot modify it.
-	// Without this, a prompt injection could append domains to bypass the firewall
-	// when the refresh daemon re-reads the file.
-	if _, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
-		[]string{"sh", "-c", "chown root:root " + DomainsFilePath + " && chmod 444 " + DomainsFilePath}); err != nil {
-		return fmt.Errorf("locking domains file: %w", err)
+	// 1b. Pre-firewall batch (root): lock down domains file + git config.
+	// Combines domain lockdown, safe.directory, and HTTPS rewrite into a
+	// single exec to save ~400ms of Docker API overhead.
+	{
+		var script strings.Builder
+		script.WriteString("set -e\n")
+		// Lock down domains file so the container user cannot modify it.
+		// Without this, a prompt injection could append domains to bypass the
+		// firewall when the refresh daemon re-reads the file.
+		fmt.Fprintf(&script, "chown root:root %s && chmod 444 %s\n", DomainsFilePath, DomainsFilePath)
+		// Git safe directory (required for sandbox workspace access).
+		fmt.Fprintf(&script, "su -s /bin/sh %s -c 'git config --global --add safe.directory %s'\n",
+			ContainerUser, ContainerWorkspace)
+		// HTTPS rewrite for GitHub — the container has no SSH keys, so rewrite
+		// git@github.com: URLs to HTTPS for Claude Code's plugin marketplace.
+		fmt.Fprintf(&script, "su -s /bin/sh %s -c 'git config --global url.https://github.com/.insteadOf git@github.com:' || true\n",
+			ContainerUser)
+
+		if _, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
+			[]string{"sh", "-c", script.String()}); err != nil {
+			return fmt.Errorf("pre-firewall setup: %w", err)
+		}
 	}
 
-	// 3. Run firewall init (exec runs as root, no sudo needed).
+	// 2. Run firewall init (exec runs as root, no sudo needed).
 	// Pass the domains file path as an argument so Go is the single source of truth.
-	_, err = ExecNonInteractive(ctx, cli, containerID, RootUser,
+	_, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
 		[]string{FirewallScriptPath, DomainsFilePath})
 	if err != nil {
 		return fmt.Errorf("init-firewall.sh: %w", err)
 	}
 
-	// 3b. Start the background firewall refresh daemon. It re-resolves all
-	// domains every 5 minutes and atomically swaps the ipset, so CDN/cloud
-	// IP rotations (e.g. Google's proxy.golang.org) don't break connections
-	// after the initial startup resolution. Non-fatal: the firewall is already
-	// up; refresh is a best-effort improvement over the one-shot approach.
-	//
-	// Launched via nohup & inside a shell exec so the Docker exec session
-	// finishes immediately — a detached exec would stay "Running" forever
-	// and fool HasOtherActiveSessions into thinking the container is in use.
-	if _, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
-		[]string{"sh", "-c", fmt.Sprintf("nohup '%s' '%s' >/dev/null 2>&1 &", RefreshFirewallScriptPath, DomainsFilePath)}); err != nil {
-		fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: firewall refresh daemon: %v\n", err)
+	// 3. Post-firewall batch (root): start refresh daemon + copy git identity.
+	// Combines the firewall refresh daemon launch and host git identity into a
+	// single exec to save ~200-400ms of Docker API overhead.
+	{
+		var script strings.Builder
+		script.WriteString("set -e\n")
+		// Start the background firewall refresh daemon. It re-resolves all
+		// domains every 5 minutes and atomically swaps the ipset, so CDN/cloud
+		// IP rotations (e.g. Google's proxy.golang.org) don't break connections
+		// after the initial startup resolution. Non-fatal: the firewall is already
+		// up; refresh is a best-effort improvement over the one-shot approach.
+		//
+		// Launched via nohup & inside a shell so the exec session finishes
+		// immediately — a detached exec would stay "Running" forever and fool
+		// HasOtherActiveSessions into thinking the container is in use.
+		fmt.Fprintf(&script, "nohup '%s' '%s' >/dev/null 2>&1 &\n", RefreshFirewallScriptPath, DomainsFilePath)
+
+		// Copy host git identity (name/email only, not credential helpers).
+		// Non-fatal: git identity is nice-to-have, so errors don't fail the batch.
+		name, email := hostGitIdentity()
+		if name != "" {
+			fmt.Fprintf(&script, "su -s /bin/sh %s -c 'git config --global user.name %q' || true\n", ContainerUser, name)
+		}
+		if email != "" {
+			fmt.Fprintf(&script, "su -s /bin/sh %s -c 'git config --global user.email %q' || true\n", ContainerUser, email)
+		}
+
+		if _, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
+			[]string{"sh", "-c", script.String()}); err != nil {
+			// Non-fatal: firewall is already up and git identity is nice-to-have
+			log.Warnf("post-firewall setup: %v", err)
+		}
 	}
 
-	// 4. Copy host git identity (name/email only, not credential helpers)
-	if err := copyHostGitIdentity(ctx, cli, containerID); err != nil {
-		// Non-fatal: git identity is nice-to-have
-		fmt.Fprintf(os.Stderr, "[claude-bunker] WARNING: git identity: %v\n", err)
-	}
-
-	// 5. Inject auth secrets (if provided)
-	if err := InjectAuthSecrets(ctx, cli, containerID, opts); err != nil {
+	// 4. Inject auth secrets (if provided)
+	if err := InjectAuthSecrets(ctx, cli, containerID, opts.Auth); err != nil {
 		return fmt.Errorf("auth injection: %w", err)
 	}
 
-	// 6. Run postStartCommand if configured.
+	// 5. Run postStartCommand if configured.
 	//
 	// TRUST BOUNDARY: postStartCommand comes from the project's config.json,
 	// which lives inside the cloned repository. A malicious config.json can
@@ -413,9 +438,8 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 // Batched: all file writes + permission changes happen in a single root exec
 // call, followed by a single user exec for git config. This reduces Docker API
 // round-trips from ~10 to 2 (saving ~1-2s of exec overhead).
-func InjectAuthSecrets(ctx context.Context, cli *client.Client, containerID string, opts RunPostStartOpts) error {
-	hasSecrets := opts.GhToken != "" || opts.ApiKey != "" || opts.OAuthToken != ""
-	if !hasSecrets {
+func InjectAuthSecrets(ctx context.Context, cli *client.Client, containerID string, auth AuthTokens) error {
+	if !auth.HasSecrets() {
 		return nil
 	}
 
@@ -426,10 +450,10 @@ func InjectAuthSecrets(ctx context.Context, cli *client.Client, containerID stri
 
 	ug := ContainerUserGroup
 
-	if err := writeSecretFiles(ctx, cli, containerID, &script, ug, opts); err != nil {
+	if err := writeSecretFiles(ctx, cli, containerID, &script, ug, auth); err != nil {
 		return err
 	}
-	createAuthWrapper(&script, ug, opts)
+	createAuthWrapper(&script, ug, auth)
 
 	// Single root exec: write all secrets + wrapper + set all permissions
 	if _, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
@@ -438,7 +462,7 @@ func InjectAuthSecrets(ctx context.Context, cli *client.Client, containerID stri
 	}
 
 	// Single user exec: git credential helper (if gh token provided)
-	if opts.GhToken != "" {
+	if auth.GhToken != "" {
 		credentialHelper := fmt.Sprintf(`!f() { echo "protocol=https"; echo "host=github.com"; echo "username=x-access-token"; echo "password=$(cat %s/gh_token)"; }; f`, SecretsDir)
 		if _, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
 			[]string{"git", "config", "--global", "credential.https://github.com.helper", credentialHelper}); err != nil {
@@ -449,29 +473,41 @@ func InjectAuthSecrets(ctx context.Context, cli *client.Client, containerID stri
 	return nil
 }
 
-// writeSecretFiles writes each provided token directly to the secrets tmpfs
-// using the Docker CopyContentToContainer API, avoiding shell commands that
+// writeSecretFiles writes all provided tokens to the secrets tmpfs in a single
+// batched operation using CopyMultipleToContainer, avoiding shell commands that
 // would expose tokens in /proc/*/cmdline. Permissions are set via the shell
 // script (which only runs chmod/chown, not the secret data).
-func writeSecretFiles(ctx context.Context, cli *client.Client, containerID string, script *strings.Builder, ug string, opts RunPostStartOpts) error {
+func writeSecretFiles(ctx context.Context, cli *client.Client, containerID string, script *strings.Builder, ug string, auth AuthTokens) error {
 	type secret struct {
 		token string
 		file  string
 	}
 	secrets := []secret{
-		{opts.GhToken, "gh_token"},
-		{opts.ApiKey, "api_key"},
-		{opts.OAuthToken, "oauth_token"},
+		{auth.GhToken, "gh_token"},
+		{auth.ApiKey, "api_key"},
+		{auth.OAuthToken, "oauth_token"},
 	}
+
+	var files []FileEntry
 	for _, s := range secrets {
 		if s.token == "" {
 			continue
 		}
 		containerPath := SecretsDir + "/" + s.file
-		if err := CopyContentToContainer(ctx, cli, containerID, []byte(s.token), containerPath); err != nil {
-			return fmt.Errorf("writing secret %s: %w", s.file, err)
-		}
+		files = append(files, FileEntry{
+			Content: []byte(s.token),
+			Path:    containerPath,
+			Mode:    0400,
+		})
 		fmt.Fprintf(script, "chmod 400 %s && chown %s %s\n", containerPath, ug, containerPath)
+	}
+
+	if len(files) == 0 {
+		return nil
+	}
+
+	if err := CopyMultipleToContainer(ctx, cli, containerID, files); err != nil {
+		return fmt.Errorf("writing auth secrets: %w", err)
 	}
 	return nil
 }
@@ -480,20 +516,20 @@ func writeSecretFiles(ctx context.Context, cli *client.Client, containerID strin
 // script at ~/.claude-auth-wrapper.sh. The wrapper reads secrets from tmpfs
 // files and exports them as env vars before exec-ing the wrapped command,
 // ensuring tokens never appear in docker inspect or container env.
-func createAuthWrapper(script *strings.Builder, ug string, opts RunPostStartOpts) {
-	if opts.ApiKey == "" && opts.OAuthToken == "" && opts.GhToken == "" {
+func createAuthWrapper(script *strings.Builder, ug string, auth AuthTokens) {
+	if !auth.HasSecrets() {
 		return
 	}
 
 	fmt.Fprintf(script, "cat > %s << 'WRAPPER_EOF'\n", AuthWrapperPath)
 	script.WriteString("#!/bin/sh\n")
-	if opts.ApiKey != "" {
+	if auth.ApiKey != "" {
 		fmt.Fprintf(script, "export ANTHROPIC_API_KEY=\"$(cat %s/api_key)\"\n", SecretsDir)
 	}
-	if opts.OAuthToken != "" {
+	if auth.OAuthToken != "" {
 		fmt.Fprintf(script, "export CLAUDE_CODE_OAUTH_TOKEN=\"$(cat %s/oauth_token)\"\n", SecretsDir)
 	}
-	if opts.GhToken != "" {
+	if auth.GhToken != "" {
 		// Export for the GitHub MCP plugin which expects this env var
 		fmt.Fprintf(script, "export GITHUB_PERSONAL_ACCESS_TOKEN=\"$(cat %s/gh_token)\"\n", SecretsDir)
 	}
@@ -502,47 +538,28 @@ func createAuthWrapper(script *strings.Builder, ug string, opts RunPostStartOpts
 	fmt.Fprintf(script, "chmod 755 %s && chown %s %s\n", AuthWrapperPath, ug, AuthWrapperPath)
 }
 
-// copyHostGitIdentity extracts user.name and user.email from the host's
-// git config and sets them in the container via a single exec call. Only
-// identity fields are copied; credential helpers and other sensitive config
-// are deliberately excluded.
-func copyHostGitIdentity(ctx context.Context, cli *client.Client, containerID string) error {
-	name, nameErr := execGitConfig("user.name")
-	email, emailErr := execGitConfig("user.email")
-
-	if nameErr != nil && emailErr != nil {
-		return nil // no git identity configured on host
-	}
-
-	// Combine both git config commands into a single exec to reduce Docker API round-trips.
-	var script strings.Builder
-	script.WriteString("set -e\n")
-	if nameErr == nil && name != "" {
-		fmt.Fprintf(&script, "git config --global user.name %q\n", name)
-	}
-	if emailErr == nil && email != "" {
-		fmt.Fprintf(&script, "git config --global user.email %q\n", email)
-	}
-	if script.Len() <= len("set -e\n") {
-		return nil // nothing to set
-	}
-
-	if _, err := ExecNonInteractive(ctx, cli, containerID, ContainerUser,
-		[]string{"sh", "-c", script.String()}); err != nil {
-		return fmt.Errorf("setting git identity in container: %w", err)
-	}
-
-	return nil
-}
-
-// execGitConfig runs `git config --global --get <key>` on the host and returns the value.
-func execGitConfig(key string) (string, error) {
-	cmd := exec.Command("git", "config", "--global", "--get", key)
+// hostGitIdentity reads user.name and user.email from the host's git config
+// in a single subprocess call (instead of two separate `git config --get` calls).
+func hostGitIdentity() (name, email string) {
+	cmd := exec.Command("git", "config", "--global", "--list")
 	out, err := cmd.Output()
 	if err != nil {
-		return "", err
+		return "", ""
 	}
-	return strings.TrimSpace(string(out)), nil
+	for _, line := range strings.Split(string(out), "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok {
+			switch strings.TrimSpace(k) {
+			case "user.name":
+				name = strings.TrimSpace(v)
+			case "user.email":
+				email = strings.TrimSpace(v)
+			}
+		}
+		if name != "" && email != "" {
+			break
+		}
+	}
+	return name, email
 }
 
 // Stop stops a container with a timeout.

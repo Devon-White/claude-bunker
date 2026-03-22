@@ -11,7 +11,6 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
 )
 
 // maxArgSize is the threshold below which we pass base64 data as a command-line
@@ -108,45 +107,13 @@ func buildDirTar(hostDir string, skip func(relPath string, isDir bool) bool) (*b
 // execWithStdin runs a command in the container, piping data to its stdin,
 // and returns an error if the command fails.
 func execWithStdin(ctx context.Context, cli *client.Client, containerID, user string, cmd []string, stdin []byte) error {
-	execCfg := container.ExecOptions{
-		User:         user,
-		AttachStdin:  true,
-		AttachStdout: true,
-		AttachStderr: true,
-		Cmd:          cmd,
-	}
-
-	execResp, err := cli.ContainerExecCreate(ctx, containerID, execCfg)
+	_, stderr, exitCode, err := execCore(ctx, cli, containerID, user, cmd, stdin)
 	if err != nil {
-		return fmt.Errorf("creating exec: %w", err)
+		return err
 	}
-
-	attachResp, err := cli.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
-	if err != nil {
-		return fmt.Errorf("attaching exec: %w", err)
+	if exitCode != 0 {
+		return fmt.Errorf("exec exited with code %d: %s", exitCode, stderr)
 	}
-	defer attachResp.Close()
-
-	if _, err := attachResp.Conn.Write(stdin); err != nil {
-		return fmt.Errorf("writing to exec stdin: %w", err)
-	}
-	if err := attachResp.CloseWrite(); err != nil {
-		return fmt.Errorf("closing exec stdin: %w", err)
-	}
-
-	var stdout, stderr bytes.Buffer
-	if _, err := stdcopy.StdCopy(&stdout, &stderr, attachResp.Reader); err != nil {
-		return fmt.Errorf("reading exec output: %w", err)
-	}
-
-	inspect, err := cli.ContainerExecInspect(ctx, execResp.ID)
-	if err != nil {
-		return fmt.Errorf("inspecting exec: %w", err)
-	}
-	if inspect.ExitCode != 0 {
-		return fmt.Errorf("exec exited with code %d: %s", inspect.ExitCode, stderr.String())
-	}
-
 	return nil
 }
 
@@ -186,6 +153,102 @@ func CopyDirToContainerExec(ctx context.Context, cli *client.Client, containerID
 		[]string{"tar", "xf", "-", "-C", containerDir}, buf.Bytes())
 }
 
+// CopyDirToContainerExecWithChown copies a host directory tree into a container
+// path and fixes ownership, all in a single exec call. This combines mkdir -p,
+// tar extraction, and chown -R into one shell command, saving ~400ms of Docker
+// API overhead compared to separate EnsureContainerDir + CopyDirToContainerExec
+// + ChownRecursive calls.
+func CopyDirToContainerExecWithChown(ctx context.Context, cli *client.Client, containerID, hostDir, containerDir, ownerGroup string, skip func(relPath string, isDir bool) bool) error {
+	buf, fileCount, err := buildDirTar(hostDir, skip)
+	if err != nil {
+		return err
+	}
+
+	containerDir = filepath.ToSlash(containerDir)
+
+	if fileCount == 0 {
+		// No files to copy, but still ensure the directory exists with correct ownership.
+		_, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
+			[]string{"sh", "-c", fmt.Sprintf("mkdir -p %q && chown %s %q", containerDir, ownerGroup, containerDir)})
+		return err
+	}
+
+	// Single exec: create dir, extract tar, fix ownership
+	return execWithStdin(ctx, cli, containerID, RootUser,
+		[]string{"sh", "-c", fmt.Sprintf("mkdir -p %q && tar xf - -C %q && chown -R %s %q", containerDir, containerDir, ownerGroup, containerDir)},
+		buf.Bytes())
+}
+
+// CopyContentToContainerWithMode writes in-memory content as a single file into
+// the container and sets the given chmod mode, all in a single exec call. This
+// saves a Docker API round-trip (~200ms) compared to separate write + chmod.
+func CopyContentToContainerWithMode(ctx context.Context, cli *client.Client, containerID string, content []byte, containerPath, mode string) error {
+	encoded := base64.StdEncoding.EncodeToString(content)
+	containerPath = filepath.ToSlash(containerPath)
+
+	if len(content) <= maxArgSize {
+		_, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
+			[]string{"sh", "-c", "echo \"$1\" | base64 -d > \"$2\" && chmod " + mode + " \"$2\"", "_", encoded, containerPath})
+		return err
+	}
+
+	return execWithStdin(ctx, cli, containerID, RootUser,
+		[]string{"sh", "-c", "base64 -d > \"$1\" && chmod " + mode + " \"$1\"", "_", containerPath}, []byte(encoded))
+}
+
+// FileEntry describes a file to write into a container via CopyMultipleToContainer.
+type FileEntry struct {
+	Content []byte
+	Path    string // absolute container path
+	Mode    int64  // file permission mode (default 0644 if 0)
+}
+
+// CopyMultipleToContainer writes multiple files into the container in a single
+// exec by piping a tar archive to `tar xf - -C /`. This is significantly faster
+// than calling CopyContentToContainer for each file individually (each of which
+// requires a separate Docker exec round-trip).
+//
+// All files are written as root. Callers should follow up with ChownRecursive
+// if ownership needs to change.
+func CopyMultipleToContainer(ctx context.Context, cli *client.Client, containerID string, files []FileEntry) error {
+	if len(files) == 0 {
+		return nil
+	}
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	for _, f := range files {
+		// Strip leading "/" for tar (tar xf -C / will re-root it)
+		name := filepath.ToSlash(f.Path)
+		if len(name) > 0 && name[0] == '/' {
+			name = name[1:]
+		}
+		mode := f.Mode
+		if mode == 0 {
+			mode = 0644
+		}
+		hdr := &tar.Header{
+			Name: name,
+			Mode: mode,
+			Size: int64(len(f.Content)),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return fmt.Errorf("tar header for %s: %w", f.Path, err)
+		}
+		if _, err := tw.Write(f.Content); err != nil {
+			return fmt.Errorf("tar content for %s: %w", f.Path, err)
+		}
+	}
+
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("closing tar: %w", err)
+	}
+
+	return execWithStdin(ctx, cli, containerID, RootUser,
+		[]string{"tar", "xf", "-", "-C", "/"}, buf.Bytes())
+}
+
 // CopyContentToContainer writes in-memory content as a single file into the
 // container using exec + base64. This avoids the Docker archive API
 // (CopyToContainer) which silently fails on tmpfs mounts.
@@ -193,10 +256,8 @@ func CopyDirToContainerExec(ctx context.Context, cli *client.Client, containerID
 // For small payloads the base64 data is passed as a command-line argument. For
 // large payloads it is piped via stdin to avoid Linux's MAX_ARG_STRLEN limit.
 //
-// Future optimization: callers that invoke CopyContentToContainer multiple times
-// in sequence (e.g. writing several config files) could be batched into a single
-// exec using a tar stream piped via stdin. This would require a new tar-pipe API
-// that accepts multiple (content, path) pairs and unpacks them in one shot.
+// For writing multiple files, prefer CopyMultipleToContainer which batches
+// all writes into a single Docker exec round-trip.
 func CopyContentToContainer(ctx context.Context, cli *client.Client, containerID string, content []byte, containerPath string) error {
 	encoded := base64.StdEncoding.EncodeToString(content)
 	containerPath = filepath.ToSlash(containerPath)
