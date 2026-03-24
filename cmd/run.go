@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -76,24 +77,23 @@ func (r *runner) cleanup() {
 	}
 	r.cleanedUp = true
 	cID := r.containerID
-	cName := r.containerName
-	eID := r.execID
-	cli := r.cli
+	execID := r.execID
 	r.mu.Unlock()
 
-	if cli == nil {
+	// Don't tear down the container if other sessions are still attached.
+	// Use a fresh context — r.ctx may already be cancelled by signal handlers.
+	checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer checkCancel()
+	if container.HasOtherActiveSessions(checkCtx, r.cli, cID, execID) {
+		verbose("Other sessions still active — leaving container running")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	if container.HasOtherActiveSessions(ctx, cli, cID, eID) {
-		return
-	}
-
+	// Stop and remove the container in the background so the user returns
+	// to their terminal immediately. docker rm -f sends SIGKILL and removes
+	// in one operation; the Docker daemon handles cleanup async.
 	info("Stopping sandbox...")
-	_ = container.StopAndRemove(ctx, cli, cName)
+	_ = exec.Command("docker", "rm", "-f", cID).Start()
 }
 
 // resolveWorkspace determines the workspace directory from env or cwd.

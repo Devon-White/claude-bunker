@@ -11,6 +11,9 @@
 # Serena cache/state
 .serena/
 
+# Unix socket for hook-driven session monitoring
+.bunker.sock
+
 # Node
 node_modules/
 

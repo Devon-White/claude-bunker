@@ -36,10 +36,11 @@ func init() {
 	initCmd.DisableFlagParsing = false
 	logsCmd.DisableFlagParsing = false
 	completionCmd.DisableFlagParsing = false
+	sessionsCmd.DisableFlagParsing = false
 
 	// Add --verbose/--quiet flags to subcommands (root command handles
 	// these via extractBunkerFlags since its flag parsing is disabled).
-	for _, cmd := range []*cobra.Command{shellCmd, pruneCmd, statusCmd, initCmd, logsCmd} {
+	for _, cmd := range []*cobra.Command{shellCmd, pruneCmd, statusCmd, initCmd, logsCmd, sessionsCmd} {
 		cmd.Flags().BoolP("verbose", "V", false, "Show detailed output")
 		cmd.Flags().BoolP("quiet", "q", false, "Suppress informational output")
 	}
@@ -51,6 +52,7 @@ func init() {
 	rootCmd.AddCommand(logsCmd)
 	rootCmd.AddCommand(completionCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(sessionsCmd)
 }
 
 // initVerbosity sets the verbosity level from cobra flags or the CLAUDE_BUNKER_QUIET env var.

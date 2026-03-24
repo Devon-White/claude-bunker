@@ -573,20 +573,6 @@ func Remove(ctx context.Context, cli *client.Client, containerID string) error {
 	return cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
 }
 
-// StopAndRemove stops and removes a container by its label name.
-func StopAndRemove(ctx context.Context, cli *client.Client, containerName string) error {
-	id, err := FindByLabel(ctx, cli, containerName)
-	if err != nil {
-		return err
-	}
-	if id == "" {
-		return nil
-	}
-
-	_ = Stop(ctx, cli, id)
-	return Remove(ctx, cli, id)
-}
-
 // HasOtherActiveSessions checks whether the container has any running exec
 // sessions other than myExecID. It uses Docker's ContainerInspect to enumerate
 // exec IDs and ContainerExecInspect to check each one's Running status.

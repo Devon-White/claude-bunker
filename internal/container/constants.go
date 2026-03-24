@@ -45,6 +45,10 @@ const ManagedSettingsDir = "/etc/claude-code"
 // exec-ing the claude command.
 const AuthWrapperPath = ContainerHome + "/.claude-auth-wrapper.sh"
 
+// BunkerHookScriptPath is the install path for bunker-hook.sh inside the container.
+// This script is invoked by Claude Code hooks to signal the host watcher.
+const BunkerHookScriptPath = "/usr/local/bin/bunker-hook.sh"
+
 // LabelKey is the Docker label used to identify claude-bunker containers.
 const LabelKey = "claude-bunker"
 

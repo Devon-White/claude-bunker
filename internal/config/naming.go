@@ -70,3 +70,30 @@ func ClaudeConfigVolume(containerName string) string {
 func ImageTag(containerName string) string {
 	return ImagePrefix + ":" + containerName
 }
+
+// DisplayName extracts the human-readable portion of a container name by
+// stripping the trailing hash suffix (e.g., "project-alpha-a1b2c3d4" → "project-alpha").
+// This is the inverse of ContainerName.
+func DisplayName(name string) string {
+	// Container names are "{basename}-{8-char-hash}". Strip the last dash + hash.
+	idx := strings.LastIndex(name, "-")
+	if idx < 0 {
+		return name
+	}
+	suffix := name[idx+1:]
+	// Verify suffix looks like a hex hash (8 chars).
+	if len(suffix) == 8 && isHex(suffix) {
+		return name[:idx]
+	}
+	return name
+}
+
+// isHex returns true if s contains only hexadecimal characters.
+func isHex(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return len(s) > 0
+}

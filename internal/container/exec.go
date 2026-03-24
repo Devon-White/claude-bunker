@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
@@ -15,13 +16,33 @@ import (
 	"github.com/Devon-White/claude-bunker/internal/platform"
 )
 
+// termEnvVars are host environment variables forwarded to interactive exec
+// sessions so the container process can detect terminal capabilities (image
+// protocols, true-color support, etc.).
+var termEnvVars = []string{
+	"TERM",
+	"COLORTERM",
+	"TERM_PROGRAM",
+	"TERM_PROGRAM_VERSION",
+	"KITTY_WINDOW_ID",
+	"KITTY_PID",
+	"WT_SESSION",
+	"ITERM_SESSION_ID",
+}
+
 // ExecInteractive runs a command interactively with TTY support.
 // Returns the exit code, the Docker exec ID, and any error.
 func ExecInteractive(ctx context.Context, cli *client.Client, containerID, user string, cmd []string) (int, string, error) {
-	// Pass TERM so the container process knows terminal capabilities.
-	termVal := os.Getenv("TERM")
-	if termVal == "" {
-		termVal = "xterm-256color"
+	// Forward terminal-related env vars so the container process can detect
+	// capabilities like image pasting (kitty/iTerm2/sixel protocols).
+	env := make([]string, 0, len(termEnvVars))
+	for _, key := range termEnvVars {
+		if val := os.Getenv(key); val != "" {
+			env = append(env, key+"="+val)
+		}
+	}
+	if !hasEnvKey(env, "TERM") {
+		env = append(env, "TERM=xterm-256color")
 	}
 
 	execCfg := container.ExecOptions{
@@ -31,7 +52,7 @@ func ExecInteractive(ctx context.Context, cli *client.Client, containerID, user 
 		AttachStderr: true,
 		Tty:          true,
 		Cmd:          cmd,
-		Env:          []string{"TERM=" + termVal},
+		Env:          env,
 	}
 
 	execResp, err := cli.ContainerExecCreate(ctx, containerID, execCfg)
@@ -175,4 +196,15 @@ func ChownRecursive(ctx context.Context, cli *client.Client, containerID, dir st
 	_, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
 		[]string{"chown", "-R", ContainerUserGroup, dir})
 	return err
+}
+
+// hasEnvKey returns true if any entry in env starts with key=.
+func hasEnvKey(env []string, key string) bool {
+	prefix := key + "="
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			return true
+		}
+	}
+	return false
 }

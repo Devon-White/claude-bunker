@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
 	"github.com/spf13/cobra"
 
 	"github.com/Devon-White/claude-bunker/internal/config"
 	ctr "github.com/Devon-White/claude-bunker/internal/container"
+	"github.com/Devon-White/claude-bunker/internal/sessions"
 )
 
 var statusCmd = &cobra.Command{
@@ -67,15 +67,19 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		if inspect.State != nil && inspect.State.StartedAt != "" {
 			started, err := time.Parse(time.RFC3339Nano, inspect.State.StartedAt)
 			if err == nil {
-				uptime := time.Since(started).Truncate(time.Second)
-				fmt.Println(kvLine("Uptime:", formatDuration(uptime)))
+				fmt.Println(kvLine("Uptime:", sessions.FormatUptime(started)))
 			}
 		}
 
 		// Check for active sessions
-		sessions := listActiveSessions(ctx, cli, id)
-		if len(sessions) > 0 {
-			fmt.Println(kvLine("Sessions:", strings.Join(sessions, ", ")))
+		mgr := sessions.NewManager(cli)
+		tree, _ := mgr.GetProcessTree(ctx, id)
+		if len(tree) > 0 {
+			names := make([]string, len(tree))
+			for i, s := range tree {
+				names[i] = s.Command
+			}
+			fmt.Println(kvLine("Sessions:", strings.Join(names, ", ")))
 		} else {
 			fmt.Println(kvLine("Sessions:", "none"))
 		}
@@ -143,44 +147,4 @@ func printResolvedConfig(cfg config.ProjectConfig) {
 	}
 }
 
-// listActiveSessions returns the names of active interactive sessions (claude, bash).
-func listActiveSessions(ctx context.Context, cli interface {
-	ContainerTop(ctx context.Context, containerID string, arguments []string) (container.ContainerTopOKBody, error)
-}, containerID string) []string {
-	top, err := cli.ContainerTop(ctx, containerID, []string{"-eo", "comm"})
-	if err != nil {
-		return nil
-	}
-	counts := map[string]int{}
-	for _, proc := range top.Processes {
-		for _, field := range proc {
-			if field == "claude" || field == "bash" {
-				counts[field]++
-			}
-		}
-	}
-	var sessions []string
-	for name, count := range counts {
-		if count == 1 {
-			sessions = append(sessions, name)
-		} else {
-			sessions = append(sessions, fmt.Sprintf("%s (x%d)", name, count))
-		}
-	}
-	return sessions
-}
 
-// formatDuration returns a human-readable duration string like "2h 15m 30s".
-func formatDuration(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		m := int(d.Minutes())
-		s := int(d.Seconds()) % 60
-		return fmt.Sprintf("%dm %ds", m, s)
-	}
-	h := int(d.Hours())
-	m := int(d.Minutes()) % 60
-	return fmt.Sprintf("%dh %dm", h, m)
-}

@@ -19,11 +19,12 @@ import (
 
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Initialize a project config",
-	Long: `Creates a .claude/.claude-bunker/config.json with sensible defaults.
+	Short: "Initialize or update a project config",
+	Long: `Creates or updates .claude/.claude-bunker/config.json.
 
 Run this in your project root to customize the sandbox behavior.
-If a config already exists, it will not be overwritten.`,
+If a config already exists, the wizard pre-selects your current settings
+so you can toggle items on/off or add new ones.`,
 	RunE: runInit,
 }
 
@@ -34,11 +35,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	cfgPath := config.ConfigPath(workspace)
 
-	// Check if config already exists
+	// Load existing config if present (for pre-populating the wizard)
+	var existing *config.ProjectConfig
 	if _, err := os.Stat(cfgPath); err == nil {
-		info("Config already exists: " + cfgPath)
-		fmt.Println(dimStyle.Render("  Edit it directly to make changes."))
-		return nil
+		if loaded, err := config.LoadProjectConfig(workspace); err == nil {
+			existing = &loaded
+			info("Updating existing config: " + cfgPath)
+		}
 	}
 
 	// Create directory structure
@@ -60,7 +63,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// Page 4: Extras (apt packages, env vars, postStartCommand, seedHistory)
 
 	// --- Page 1: Languages ---
-	selected, err := selectLanguages()
+	selected, err := selectLanguages(existing)
 	if err != nil {
 		return writeConfig(cfgPath, nil)
 	}
@@ -85,7 +88,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// --- Pages 2-4: Settings form (runs while prefetch continues) ---
-	settings, err := selectSettings()
+	settings, err := selectSettings(existing)
 	if err != nil {
 		return writeConfig(cfgPath, nil)
 	}
@@ -96,7 +99,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	selections := make([]initSelection, 0, len(selected))
 	for i, idx := range selected {
 		preset := container.Presets[idx]
-		version, err := selectVersion(preset, results[i].tag, results[i].versions)
+		currentVersion := existingVersion(existing, preset)
+		version, err := selectVersion(preset, results[i].tag, results[i].versions, currentVersion)
 		if err != nil {
 			return writeConfig(cfgPath, nil)
 		}
@@ -114,14 +118,52 @@ func runInit(cmd *cobra.Command, args []string) error {
 	return writeConfig(cfgPath, cfg)
 }
 
+// preselectedLanguages returns the preset indices that match features in the existing config.
+func preselectedLanguages(existing *config.ProjectConfig) []int {
+	if existing == nil || len(existing.Features) == 0 {
+		return nil
+	}
+	var selected []int
+	for i, p := range container.Presets {
+		for featureRef := range existing.Features {
+			// featureRef is "ghcr.io/devcontainers/features/node:1"
+			repo := strings.SplitN(featureRef, ":", 2)[0]
+			if repo == p.FeatureRepo {
+				selected = append(selected, i)
+				break
+			}
+		}
+	}
+	return selected
+}
+
+// existingVersion returns the version string configured for a preset in the existing config.
+func existingVersion(existing *config.ProjectConfig, preset container.LanguagePreset) string {
+	if existing == nil {
+		return ""
+	}
+	for featureRef, opts := range existing.Features {
+		repo := strings.SplitN(featureRef, ":", 2)[0]
+		if repo == preset.FeatureRepo {
+			if v, ok := opts[preset.VersionOption]; ok {
+				if s, ok := v.(string); ok {
+					return s
+				}
+			}
+		}
+	}
+	return ""
+}
+
 // selectLanguages shows a multi-select picker for languages/runtimes.
-func selectLanguages() ([]int, error) {
+// If existing config is provided, previously selected languages are pre-checked.
+func selectLanguages(existing *config.ProjectConfig) ([]int, error) {
 	options := make([]huh.Option[int], len(container.Presets))
 	for i, p := range container.Presets {
 		options[i] = huh.NewOption(p.Label, i)
 	}
 
-	var selected []int
+	selected := preselectedLanguages(existing)
 	err := huh.NewForm(
 		huh.NewGroup(
 			huh.NewMultiSelect[int]().
@@ -140,19 +182,29 @@ func selectLanguages() ([]int, error) {
 
 // selectVersion shows a select picker for a language version.
 // If prefetched is non-empty it is used directly; otherwise falls back to
-// the preset's hardcoded CommonVersions.
-func selectVersion(preset container.LanguagePreset, tag string, prefetched []string) (string, error) {
+// the preset's hardcoded CommonVersions. If currentVersion is non-empty and
+// present in the list, it is pre-selected.
+func selectVersion(preset container.LanguagePreset, tag string, prefetched []string, currentVersion string) (string, error) {
 	versions := prefetched
 	if len(versions) == 0 {
 		versions = preset.CommonVersions
 	}
 
-	options := make([]huh.Option[string], len(versions))
-	for i, v := range versions {
-		options[i] = huh.NewOption(v, v)
+	// If the current version is not in the list, prepend it so the user can keep it
+	if currentVersion != "" && !slices.Contains(versions, currentVersion) {
+		versions = append([]string{currentVersion}, versions...)
 	}
 
-	var version string
+	options := make([]huh.Option[string], len(versions))
+	for i, v := range versions {
+		label := v
+		if v == currentVersion {
+			label = v + " (current)"
+		}
+		options[i] = huh.NewOption(label, v)
+	}
+
+	version := currentVersion
 	err := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
@@ -195,15 +247,77 @@ const (
 	settingHooks    = "hooks"
 )
 
-// selectSettings shows a toggle picker followed by conditional detail pages.
-// Only the sections the user enables are shown as subsequent form pages.
-func selectSettings() (initSettings, error) {
+// initSettingsFromConfig builds pre-populated initSettings from an existing config.
+// It also returns which setting sections should be pre-enabled.
+func initSettingsFromConfig(existing *config.ProjectConfig) (initSettings, []string) {
 	s := initSettings{
 		seedHistory: true,
 	}
+	if existing == nil {
+		return s, nil
+	}
 
-	// Which sections to configure
 	var enabled []string
+
+	// Network: domains that aren't from language presets, plus ghToken
+	if len(existing.AllowDomains) > 0 || existing.GhToken != "" {
+		enabled = append(enabled, settingNetwork)
+		// Filter out domains that come from language preset selections
+		presetDomains := make(map[string]bool)
+		for _, p := range container.Presets {
+			for _, d := range p.Domains {
+				presetDomains[d] = true
+			}
+		}
+		var extraDomains []string
+		for _, d := range existing.AllowDomains {
+			if !presetDomains[d] {
+				extraDomains = append(extraDomains, d)
+			}
+		}
+		s.allowDomains = strings.Join(extraDomains, ", ")
+		s.ghToken = existing.GhToken
+	}
+
+	// Plugins
+	if existing.Plugins != "" {
+		enabled = append(enabled, settingPlugins)
+		s.plugins = existing.Plugins
+	}
+
+	// Packages
+	if len(existing.Apt) > 0 {
+		enabled = append(enabled, settingPackages)
+		s.aptPackages = strings.Join(existing.Apt, " ")
+	}
+
+	// Env
+	if len(existing.Env) > 0 {
+		enabled = append(enabled, settingEnv)
+		var pairs []string
+		for k, v := range existing.Env {
+			pairs = append(pairs, k+"="+v)
+		}
+		sort.Strings(pairs)
+		s.envVars = strings.Join(pairs, ", ")
+	}
+
+	// Hooks
+	if existing.OnCreateCommand != "" || existing.PostStartCommand != "" || (existing.SeedHistory != nil && !*existing.SeedHistory) {
+		enabled = append(enabled, settingHooks)
+		s.onCreateCommand = existing.OnCreateCommand
+		s.postStartCommand = existing.PostStartCommand
+		s.seedHistory = existing.ShouldSeedHistory()
+	}
+
+	return s, enabled
+}
+
+// selectSettings shows a toggle picker followed by conditional detail pages.
+// Only the sections the user enables are shown as subsequent form pages.
+// If existing config is provided, settings are pre-populated.
+func selectSettings(existing *config.ProjectConfig) (initSettings, error) {
+	s, enabled := initSettingsFromConfig(existing)
 
 	err := huh.NewForm(
 		// Page 1: Toggle which settings to configure
@@ -410,6 +524,6 @@ func writeConfig(path string, cfg map[string]interface{}) error {
 		return fmt.Errorf("writing config: %w", err)
 	}
 
-	success("Created " + path)
+	success("Saved " + path)
 	return nil
 }

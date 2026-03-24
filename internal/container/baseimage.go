@@ -10,14 +10,15 @@ const BaseImageRegistry = "ghcr.io/devon-white/claude-bunker"
 
 // baseTemplateData holds the values injected into base.dockerfile.tmpl.
 type baseTemplateData struct {
-	User                string
-	Home                string
-	Workspace           string
-	HistoryDir          string
-	ManagedSettingsDir  string
-	CommonFirewallPath  string
-	FirewallPath        string
-	RefreshFirewallPath string
+	User                 string
+	Home                 string
+	Workspace            string
+	HistoryDir           string
+	ManagedSettingsDir   string
+	CommonFirewallPath   string
+	FirewallPath         string
+	RefreshFirewallPath  string
+	BunkerHookScriptPath string
 }
 
 // baseTmpl is parsed once at package init from the embedded template.
@@ -50,9 +51,10 @@ func generateBaseContent() string {
 		Workspace:           ContainerWorkspace,
 		HistoryDir:          CommandHistoryDir,
 		ManagedSettingsDir:  ManagedSettingsDir,
-		CommonFirewallPath:  CommonFirewallScriptPath,
-		FirewallPath:        FirewallScriptPath,
-		RefreshFirewallPath: RefreshFirewallScriptPath,
+		CommonFirewallPath:   CommonFirewallScriptPath,
+		FirewallPath:         FirewallScriptPath,
+		RefreshFirewallPath:  RefreshFirewallScriptPath,
+		BunkerHookScriptPath: BunkerHookScriptPath,
 	}
 
 	var b strings.Builder
