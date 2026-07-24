@@ -280,11 +280,25 @@ func runInSandbox(passedArgs []string, execCmd string) error {
 	return nil // unreachable, but required by RunE signature
 }
 
+// failClosed returns a fatal error when err is non-nil and not overridden by a
+// flag. When overridden, it returns nil and the caller should warn and continue.
+// This centralizes the security-critical "refuse to run without the protection
+// unless the user explicitly opted out" decision.
+func failClosed(err error, overridden bool, remediation string) error {
+	if err == nil || overridden {
+		return nil
+	}
+	return fmt.Errorf("%w\n%s", err, remediation)
+}
+
 // loadConfig reads project config and resolves auth token precedence.
 func (r *runner) loadConfig(flags bunkerFlags) {
 	cfg, err := config.LoadProjectConfig(r.workspace)
+	if fatal := failClosed(err, flags.force, "Fix the config, or re-run with --force to ignore it."); fatal != nil {
+		die("Failed to parse config: " + fatal.Error())
+	}
 	if err != nil {
-		warn("Failed to parse config: " + err.Error())
+		warn("Continuing despite config error (--force): " + err.Error())
 	}
 	r.projectCfg = cfg
 

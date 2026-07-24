@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Devon-White/claude-bunker/internal/container"
@@ -215,5 +217,26 @@ func TestExtractBunkerFlags(t *testing.T) {
 				t.Errorf("noSandbox = %v, want %v", got.noSandbox, tt.want.noSandbox)
 			}
 		})
+	}
+}
+
+func TestFailClosed(t *testing.T) {
+	realErr := errors.New("bad config")
+
+	if got := failClosed(nil, false, "fix it"); got != nil {
+		t.Errorf("nil error should stay nil, got %v", got)
+	}
+	if got := failClosed(realErr, true, "fix it"); got != nil {
+		t.Errorf("overridden error should be nil, got %v", got)
+	}
+	got := failClosed(realErr, false, "fix it or use --force")
+	if got == nil {
+		t.Fatal("non-overridden error should be fatal, got nil")
+	}
+	if !errors.Is(got, realErr) {
+		t.Errorf("fatal error should wrap the cause; got %v", got)
+	}
+	if !strings.Contains(got.Error(), "fix it or use --force") {
+		t.Errorf("fatal error should include remediation; got %q", got.Error())
 	}
 }
