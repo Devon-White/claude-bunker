@@ -240,3 +240,16 @@ func TestFailClosed(t *testing.T) {
 		t.Errorf("fatal error should include remediation; got %q", got.Error())
 	}
 }
+
+func TestFailClosed_Seed(t *testing.T) {
+	seedErr := errors.New("cannot write managed-settings.json")
+
+	// Without --no-sandbox, a seed failure is fatal.
+	if failClosed(seedErr, false, "re-run with --no-sandbox") == nil {
+		t.Error("seed failure without --no-sandbox should be fatal")
+	}
+	// With --no-sandbox, it is tolerated.
+	if failClosed(seedErr, true, "re-run with --no-sandbox") != nil {
+		t.Error("seed failure with --no-sandbox should be tolerated")
+	}
+}

@@ -483,8 +483,12 @@ func (r *runner) seedSettings() {
 		PluginLevel:  r.projectCfg.PluginLevel(),
 		LogW:         log,
 	}
-	if err := sandbox.SeedSettings(r.ctx, r.cli, opts); err != nil {
-		warn("Failed to seed settings: " + err.Error())
+	err := sandbox.SeedSettings(r.ctx, r.cli, opts)
+	if fatal := failClosed(err, r.noSandbox, "The sandbox cannot be enforced. Re-run with --no-sandbox to launch without it (NOT recommended)."); fatal != nil {
+		die("Failed to seed sandbox settings: " + fatal.Error())
+	}
+	if err != nil {
+		warn("Launching without enforced sandbox settings (--no-sandbox): " + err.Error())
 	}
 	if r.projectCfg.ShouldSeedHistory() {
 		if err := sandbox.SeedSessionHistory(r.ctx, r.cli, r.containerID, r.workspace, log); err != nil {
