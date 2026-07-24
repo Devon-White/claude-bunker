@@ -11,22 +11,40 @@ import (
 // Values are cached in memory after the first load; reads never hit disk more than once.
 // Writes update both the in-memory cache and the file.
 type jsonMapStore struct {
-	mu     sync.Mutex
-	path   string
-	cache  map[string]string
-	loaded bool
+	mu       sync.Mutex
+	filename string
+	cache    map[string]string
+	loaded   bool
 }
 
-// newJSONMapStore creates a store backed by ~/.claude/<filename>.
-// If the home directory cannot be determined, the store operates in-memory only.
-func newJSONMapStore(filename string) *jsonMapStore {
+// storeDir returns the base directory for bunker's JSON stores. It honors
+// CLAUDE_BUNKER_STORE_DIR (used for test isolation and custom setups) and
+// otherwise falls back to ~/.claude. Returns "" if no directory can be found,
+// in which case the store operates in-memory only.
+func storeDir() string {
+	if d := os.Getenv("CLAUDE_BUNKER_STORE_DIR"); d != "" {
+		return d
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return &jsonMapStore{}
+		return ""
 	}
-	return &jsonMapStore{
-		path: filepath.Join(home, ".claude", filename),
+	return filepath.Join(home, ".claude")
+}
+
+// newJSONMapStore creates a store backed by <storeDir>/<filename>, resolved
+// lazily so the directory can be overridden at runtime (e.g. in tests).
+func newJSONMapStore(filename string) *jsonMapStore {
+	return &jsonMapStore{filename: filename}
+}
+
+// path resolves the on-disk path, or "" for in-memory-only operation.
+func (s *jsonMapStore) path() string {
+	dir := storeDir()
+	if dir == "" {
+		return ""
 	}
+	return filepath.Join(dir, s.filename)
 }
 
 // ensureLoaded reads the JSON file into cache on the first call. Must be called with mu held.
@@ -36,10 +54,11 @@ func (s *jsonMapStore) ensureLoaded() {
 	}
 	s.loaded = true
 	s.cache = map[string]string{}
-	if s.path == "" {
+	p := s.path()
+	if p == "" {
 		return
 	}
-	data, err := os.ReadFile(s.path)
+	data, err := os.ReadFile(p)
 	if err != nil {
 		return
 	}
@@ -49,17 +68,18 @@ func (s *jsonMapStore) ensureLoaded() {
 
 // persist writes the cache to disk. Must be called with mu held.
 func (s *jsonMapStore) persist() error {
-	if s.path == "" {
+	p := s.path()
+	if p == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(s.cache, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0o644)
+	return os.WriteFile(p, data, 0o644)
 }
 
 // Get returns the value for key, or empty string if not found.
