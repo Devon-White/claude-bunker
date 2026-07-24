@@ -123,15 +123,15 @@ func resolveWorkspace() string {
 // bunkerFlags holds claude-bunker-specific flags extracted from the args
 // before the remaining args are passed through to claude/bash.
 type bunkerFlags struct {
-	auth       container.AuthTokens
-	quiet      bool
-	verbose    bool
-	keep       bool
-	rebuild    bool
-	force      bool
-	noSandbox  bool
-	remaining  []string
-	err        error
+	auth      container.AuthTokens
+	quiet     bool
+	verbose   bool
+	keep      bool
+	rebuild   bool
+	force     bool
+	noSandbox bool
+	remaining []string
+	err       error
 }
 
 // extractBunkerFlags pulls claude-bunker-specific flags from the arg list.
