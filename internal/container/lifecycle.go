@@ -573,32 +573,39 @@ func Remove(ctx context.Context, cli *client.Client, containerID string) error {
 	return cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
 }
 
-// HasOtherActiveSessions checks whether the container has any running exec
-// sessions other than myExecID. It uses Docker's ContainerInspect to enumerate
-// exec IDs and ContainerExecInspect to check each one's Running status.
-func HasOtherActiveSessions(ctx context.Context, cli *client.Client, containerID, myExecID string) bool {
+// execInspector is the minimal Docker surface HasOtherActiveSessions needs.
+// *client.Client satisfies it; tests use a fake.
+type execInspector interface {
+	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
+	ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error)
+}
+
+// HasOtherActiveSessions reports whether the container has a running exec
+// session other than myExecID. It returns an error if the daemon can't be
+// queried — callers must treat that as "cannot determine" and fail closed
+// (do not tear the container down), because a false "no sessions" would let one
+// exiting session SIGKILL a container hosting other live sessions.
+func HasOtherActiveSessions(ctx context.Context, cli execInspector, containerID, myExecID string) (bool, error) {
 	inspect, err := cli.ContainerInspect(ctx, containerID)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("inspecting container: %w", err)
 	}
-
 	for _, eid := range inspect.ExecIDs {
 		if eid == myExecID {
 			continue
 		}
 		execInfo, err := cli.ContainerExecInspect(ctx, eid)
 		if err != nil {
-			continue
+			return false, fmt.Errorf("inspecting exec %s: %w", eid, err)
 		}
 		if execInfo.Running {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
-// HasAnyActiveSessions checks whether the container has any running exec sessions.
-// Used to prevent stopping a container with active sessions during fingerprint-based rebuilds.
-func HasAnyActiveSessions(ctx context.Context, cli *client.Client, containerID string) bool {
+// HasAnyActiveSessions reports whether the container has any running exec session.
+func HasAnyActiveSessions(ctx context.Context, cli execInspector, containerID string) (bool, error) {
 	return HasOtherActiveSessions(ctx, cli, containerID, "")
 }

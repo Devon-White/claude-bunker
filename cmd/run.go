@@ -86,7 +86,16 @@ func (r *runner) cleanup() {
 	// Use a fresh context — r.ctx may already be cancelled by signal handlers.
 	checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer checkCancel()
-	if container.HasOtherActiveSessions(checkCtx, r.cli, cID, execID) {
+	active, err := container.HasOtherActiveSessions(checkCtx, r.cli, cID, execID)
+	if err != nil {
+		// Fail closed: if we can't tell, assume other sessions may be active and
+		// leave the container running — unless the user forced teardown.
+		if !r.force {
+			verbose("Could not determine active sessions; leaving container running: " + err.Error())
+			return
+		}
+		verbose("Could not determine active sessions; forcing teardown (--force): " + err.Error())
+	} else if active {
 		verbose("Other sessions still active — leaving container running")
 		return
 	}
@@ -358,7 +367,8 @@ func (r *runner) resolveContainer() {
 		}
 		// Config changed, but don't kill active sessions — reuse the container
 		// and let the changes take effect on the next clean start.
-		if container.HasAnyActiveSessions(r.ctx, r.cli, id) {
+		active, aerr := container.HasAnyActiveSessions(r.ctx, r.cli, id)
+		if active || aerr != nil {
 			if r.fpResult.ImageMatch {
 				warn("Config changed but sandbox has active sessions — restart to apply")
 			} else {
