@@ -51,10 +51,12 @@ type runner struct {
 	extraDomains  []string
 	auth          container.AuthTokens
 
-	execID   string              // Docker exec ID from ExecInteractive, used for cleanup session detection
-	reused   bool                // true when attaching to an already-running container with matching fingerprints
-	noCache  bool                // true when --rebuild is used; passed to Docker build as NoCache
-	proxyCfg sandbox.ProxyConfig // proxy config detected from host env
+	execID    string              // Docker exec ID from ExecInteractive, used for cleanup session detection
+	reused    bool                // true when attaching to an already-running container with matching fingerprints
+	noCache   bool                // true when --rebuild is used; passed to Docker build as NoCache
+	force     bool                // --force: override fail-closed guards
+	noSandbox bool                // --no-sandbox: launch even if sandbox settings can't be seeded
+	proxyCfg  sandbox.ProxyConfig // proxy config detected from host env
 
 	// Computed during resolveContainer, reused in buildAndCreate for fingerprint saving.
 	buildInput config.BuildInput
@@ -112,12 +114,15 @@ func resolveWorkspace() string {
 // bunkerFlags holds claude-bunker-specific flags extracted from the args
 // before the remaining args are passed through to claude/bash.
 type bunkerFlags struct {
-	auth      container.AuthTokens
-	quiet     bool
-	verbose   bool
-	keep      bool
-	rebuild   bool
-	remaining []string
+	auth       container.AuthTokens
+	quiet      bool
+	verbose    bool
+	keep       bool
+	rebuild    bool
+	force      bool
+	noSandbox  bool
+	remaining  []string
+	err        error
 }
 
 // extractBunkerFlags pulls claude-bunker-specific flags from the arg list.
@@ -132,10 +137,12 @@ func extractBunkerFlags(args []string) bunkerFlags {
 		"--oauth-token": &f.auth.OAuthToken,
 	}
 	boolFlags := map[string]*bool{
-		"--verbose": &f.verbose,
-		"--quiet":   &f.quiet,
-		"--keep":    &f.keep,
-		"--rebuild": &f.rebuild,
+		"--verbose":    &f.verbose,
+		"--quiet":      &f.quiet,
+		"--keep":       &f.keep,
+		"--rebuild":    &f.rebuild,
+		"--force":      &f.force,
+		"--no-sandbox": &f.noSandbox,
 	}
 
 	i := 0
@@ -153,18 +160,23 @@ func extractBunkerFlags(args []string) bunkerFlags {
 		handled := false
 		for flag, dest := range flagMap {
 			if arg == flag {
-				if i+1 < len(args) {
+				if i+1 < len(args) && args[i+1] != "" {
 					*dest = args[i+1]
 					i += 2
 				} else {
-					// Flag at end of args with no value — consume it
+					f.err = fmt.Errorf("flag %s needs a non-empty value", flag)
 					i++
 				}
 				handled = true
 				break
 			}
 			if strings.HasPrefix(arg, flag+"=") {
-				*dest = arg[len(flag)+1:]
+				val := arg[len(flag)+1:]
+				if val == "" {
+					f.err = fmt.Errorf("flag %s needs a non-empty value", flag)
+				} else {
+					*dest = val
+				}
 				i++
 				handled = true
 				break
@@ -187,6 +199,9 @@ func runDefault(cmd *cobra.Command, args []string) error {
 // `claude-bunker` and `claude-bunker shell`.
 func runInSandbox(passedArgs []string, execCmd string) error {
 	flags := extractBunkerFlags(passedArgs)
+	if flags.err != nil {
+		die(flags.err.Error())
+	}
 
 	// Set verbosity: --quiet or CLAUDE_BUNKER_QUIET=1 suppresses info output,
 	// --verbose enables detailed output.
@@ -213,6 +228,8 @@ func runInSandbox(passedArgs []string, execCmd string) error {
 		cancel:    cancel,
 		cli:       cli,
 		workspace: resolveWorkspace(),
+		force:     flags.force,
+		noSandbox: flags.noSandbox,
 	}
 	activeRunner = r
 

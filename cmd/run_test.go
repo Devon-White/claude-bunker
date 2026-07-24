@@ -9,9 +9,10 @@ import (
 
 func TestExtractBunkerFlags(t *testing.T) {
 	tests := []struct {
-		name string
-		args []string
-		want bunkerFlags
+		name    string
+		args    []string
+		want    bunkerFlags
+		wantErr bool
 	}{
 		{
 			name: "no flags passes all args to remaining",
@@ -100,9 +101,34 @@ func TestExtractBunkerFlags(t *testing.T) {
 			},
 		},
 		{
-			name: "flag at end with no value does not panic",
-			args: []string{"--gh-token"},
-			want: bunkerFlags{},
+			name: "force flag",
+			args: []string{"--force"},
+			want: bunkerFlags{force: true},
+		},
+		{
+			name: "no-sandbox flag",
+			args: []string{"--no-sandbox"},
+			want: bunkerFlags{noSandbox: true},
+		},
+		{
+			name:    "gh-token at end with no value is an error",
+			args:    []string{"--gh-token"},
+			wantErr: true,
+		},
+		{
+			name:    "api-key at end with no value is an error",
+			args:    []string{"--api-key"},
+			wantErr: true,
+		},
+		{
+			name:    "oauth-token at end with no value is an error",
+			args:    []string{"--oauth-token"},
+			wantErr: true,
+		},
+		{
+			name:    "equals form with empty value is an error",
+			args:    []string{"--gh-token="},
+			wantErr: true,
 		},
 		{
 			name: "multiple bunker flags all extracted",
@@ -134,16 +160,6 @@ func TestExtractBunkerFlags(t *testing.T) {
 			want: bunkerFlags{},
 		},
 		{
-			name: "api-key at end with no value does not panic",
-			args: []string{"--api-key"},
-			want: bunkerFlags{},
-		},
-		{
-			name: "oauth-token at end with no value does not panic",
-			args: []string{"--oauth-token"},
-			want: bunkerFlags{},
-		},
-		{
 			name: "bunker flags interspersed among claude flags",
 			args: []string{"--print", "--gh-token", "ghp_abc", "--model", "opus", "--quiet", "--dangerously-skip-permissions"},
 			want: bunkerFlags{
@@ -151,11 +167,6 @@ func TestExtractBunkerFlags(t *testing.T) {
 				quiet: true,
 				remaining: []string{"--print", "--model", "opus", "--dangerously-skip-permissions"},
 			},
-		},
-		{
-			name: "equals form with empty value",
-			args: []string{"--gh-token="},
-			want: bunkerFlags{},
 		},
 		{
 			name: "only non-bunker flags all land in remaining",
@@ -193,6 +204,15 @@ func TestExtractBunkerFlags(t *testing.T) {
 			}
 			if !slices.Equal(got.remaining, tt.want.remaining) {
 				t.Errorf("remaining = %v, want %v", got.remaining, tt.want.remaining)
+			}
+			if (got.err != nil) != tt.wantErr {
+				t.Errorf("err = %v, wantErr = %v", got.err, tt.wantErr)
+			}
+			if got.force != tt.want.force {
+				t.Errorf("force = %v, want %v", got.force, tt.want.force)
+			}
+			if got.noSandbox != tt.want.noSandbox {
+				t.Errorf("noSandbox = %v, want %v", got.noSandbox, tt.want.noSandbox)
 			}
 		})
 	}
