@@ -135,8 +135,9 @@ type bunkerFlags struct {
 }
 
 // extractBunkerFlags pulls claude-bunker-specific flags from the arg list.
-// Flags: --gh-token, --api-key, --oauth-token (each takes a value).
-// Boolean flags: --verbose, --quiet, --keep, --rebuild.
+// Value flags: --gh-token, --api-key, --oauth-token (each takes a non-empty
+// value; a missing or empty value sets f.err).
+// Boolean flags: --verbose, --quiet, --keep, --rebuild, --force, --no-sandbox.
 // Returns the extracted values and the remaining args to pass through.
 func extractBunkerFlags(args []string) bunkerFlags {
 	var f bunkerFlags
@@ -368,11 +369,18 @@ func (r *runner) resolveContainer() {
 		// Config changed, but don't kill active sessions — reuse the container
 		// and let the changes take effect on the next clean start.
 		active, aerr := container.HasAnyActiveSessions(r.ctx, r.cli, id)
+		if aerr != nil {
+			verbose("Could not verify active sessions: " + aerr.Error())
+		}
 		if active || aerr != nil {
+			reason := "sandbox has active sessions"
+			if aerr != nil {
+				reason = "active sessions could not be verified"
+			}
 			if r.fpResult.ImageMatch {
-				warn("Config changed but sandbox has active sessions — restart to apply")
+				warn("Config changed but " + reason + " — restart to apply")
 			} else {
-				warn("Image config changed but sandbox has active sessions — restart to apply")
+				warn("Image config changed but " + reason + " — restart to apply")
 			}
 			r.containerID = id
 			r.reused = true
