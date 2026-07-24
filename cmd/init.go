@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,29 @@ import (
 	"github.com/Devon-White/claude-bunker/internal/config"
 	"github.com/Devon-White/claude-bunker/internal/container"
 )
+
+// stdinIsTTY is a seam over isTTY so tests can force the non-interactive path.
+var stdinIsTTY = isTTY
+
+// nonInteractiveInit decides what init does when stdin is not a terminal.
+// Returns write=true when a default config should be written; otherwise an
+// error explaining how to proceed. It never silently overwrites.
+func nonInteractiveInit(defaults bool) (write bool, err error) {
+	if defaults {
+		return true, nil
+	}
+	return false, Coded(ExitError, errors.New(
+		"init needs an interactive terminal; re-run with --defaults to write a default config non-interactively"))
+}
+
+// abortErr maps a huh form abort (Esc/Ctrl+C) to a cancellation exit code and
+// passes other errors through. Callers return this WITHOUT writing a config.
+func abortErr(err error) error {
+	if errors.Is(err, huh.ErrUserAborted) {
+		return Coded(ExitCancelled, errors.New("init cancelled"))
+	}
+	return err
+}
 
 var initCmd = &cobra.Command{
 	Use:   "init",
@@ -50,9 +74,17 @@ func runInit(cmd *cobra.Command, args []string) error {
 		die("Failed to create config directory: " + err.Error())
 	}
 
-	// Non-interactive fallback: write empty config if stdin is not a terminal
-	if !isTTY() {
-		return writeConfig(cfgPath, nil)
+	// Non-interactive: never silently overwrite. Require --defaults to write.
+	if !stdinIsTTY() {
+		defaults, _ := cmd.Flags().GetBool("defaults")
+		write, err := nonInteractiveInit(defaults)
+		if err != nil {
+			return err
+		}
+		if write {
+			return writeConfig(cfgPath, nil)
+		}
+		return nil
 	}
 
 	// Interactive wizard — multi-page form
@@ -65,7 +97,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// --- Page 1: Languages ---
 	selected, err := selectLanguages(existing)
 	if err != nil {
-		return writeConfig(cfgPath, nil)
+		return abortErr(err)
 	}
 
 	// Pre-fetch tags/versions concurrently while we collect other settings
@@ -90,7 +122,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// --- Pages 2-4: Settings form (runs while prefetch continues) ---
 	settings, err := selectSettings(existing)
 	if err != nil {
-		return writeConfig(cfgPath, nil)
+		return abortErr(err)
 	}
 
 	// --- Language version selection (sequential, needs prefetch results) ---
@@ -102,7 +134,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		currentVersion := existingVersion(existing, preset)
 		version, err := selectVersion(preset, results[i].tag, results[i].versions, currentVersion)
 		if err != nil {
-			return writeConfig(cfgPath, nil)
+			return abortErr(err)
 		}
 		selections = append(selections, initSelection{
 			preset:  preset,

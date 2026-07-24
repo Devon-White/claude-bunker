@@ -45,6 +45,8 @@ func init() {
 		cmd.Flags().BoolP("quiet", "q", false, "Suppress informational output")
 	}
 
+	initCmd.Flags().Bool("defaults", false, "Write a default config non-interactively (no prompts)")
+
 	rootCmd.AddCommand(shellCmd)
 	rootCmd.AddCommand(pruneCmd)
 	rootCmd.AddCommand(statusCmd)
