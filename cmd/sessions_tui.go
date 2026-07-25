@@ -39,15 +39,7 @@ func runSessionsTUI(cmd *cobra.Command, args []string) error {
 
 	mgr := sessions.NewManager(cli)
 
-	workspace := resolveWorkspace()
-	watcher := sessions.NewWatcher(mgr, workspace)
-	watcher.SetHookEventCallback(func(e sessions.HookEvent) {
-		// When a Stop hook pushes a title (e.g., after /rename),
-		// store it in the registry so FetchSnapshot picks it up.
-		if e.Event == sessions.HookStop && e.Title != "" && e.SessionID != "" {
-			_ = sessions.SetSessionTitle(e.ContainerID, e.SessionID, e.Title)
-		}
-	})
+	watcher := sessions.NewWatcher(mgr)
 	updateCh := watcher.Subscribe(ctx)
 
 	m := newSessionsModel(ctx, cancel, mgr, cli, updateCh)
