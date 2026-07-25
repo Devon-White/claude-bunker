@@ -3,9 +3,20 @@ package devcontainer
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/Devon-White/claude-bunker/internal/config"
 )
+
+// bunkerUser is the forced non-root container user.
+const bunkerUser = "claude-bunker"
+
+// bunkerCustomizationsKey is the customizations namespace holding bunker extras.
+const bunkerCustomizationsKey = "claude-bunker"
+
+// forcedCaps are the network capabilities bunker's firewall requires; forced
+// into capAdd whether bunker generates the file or augments a user-authored one.
+var forcedCaps = []string{"NET_ADMIN", "NET_RAW"}
 
 // DevContainer is the subset of devcontainer.json that claude-bunker reads.
 type DevContainer struct {
@@ -45,7 +56,7 @@ func Parse(data []byte, localEnv func(string) (string, bool)) (DevContainer, err
 // bunkerExtras extracts customizations["claude-bunker"], if present.
 func (dc DevContainer) bunkerExtras() bunkerCustomizations {
 	var bc bunkerCustomizations
-	if raw, ok := dc.Customizations["claude-bunker"]; ok {
+	if raw, ok := dc.Customizations[bunkerCustomizationsKey]; ok {
 		_ = json.Unmarshal(raw, &bc)
 	}
 	return bc
@@ -57,6 +68,9 @@ func ToProjectConfig(dc DevContainer) config.ProjectConfig {
 
 	features := map[string]map[string]interface{}{}
 	for ref, opts := range dc.Features {
+		if b, ok := opts.(bool); ok && !b {
+			continue // false shorthand: feature explicitly disabled, skip it
+		}
 		if m, ok := opts.(map[string]interface{}); ok {
 			features[ref] = m
 		} else {
@@ -92,18 +106,7 @@ func commandToString(raw json.RawMessage) string {
 	}
 	var arr []string
 	if json.Unmarshal(raw, &arr) == nil {
-		return joinCommands(arr)
+		return strings.Join(arr, " && ")
 	}
 	return ""
-}
-
-func joinCommands(cmds []string) string {
-	out := ""
-	for i, c := range cmds {
-		if i > 0 {
-			out += " && "
-		}
-		out += c
-	}
-	return out
 }

@@ -64,6 +64,24 @@ func TestParseAndToProjectConfig(t *testing.T) {
 	}
 }
 
+func TestToProjectConfig_FeatureShorthand(t *testing.T) {
+	dc := DevContainer{Features: map[string]interface{}{
+		"ghcr.io/x/enabled:1":  map[string]interface{}{"version": "1"},
+		"ghcr.io/x/disabled:1": false,
+		"ghcr.io/x/bare:1":     true,
+	}}
+	cfg := ToProjectConfig(dc)
+	if _, ok := cfg.Features["ghcr.io/x/disabled:1"]; ok {
+		t.Error("a false-valued (disabled) feature must be skipped")
+	}
+	if _, ok := cfg.Features["ghcr.io/x/enabled:1"]; !ok {
+		t.Error("object-valued feature must be present")
+	}
+	if opts, ok := cfg.Features["ghcr.io/x/bare:1"]; !ok || len(opts) != 0 {
+		t.Errorf("true-valued feature must be present with empty options: %v", cfg.Features["ghcr.io/x/bare:1"])
+	}
+}
+
 func TestCommandToString(t *testing.T) {
 	cases := map[string]string{
 		`"a"`:               "a",

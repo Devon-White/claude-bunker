@@ -31,8 +31,8 @@ func Generate(cfg config.ProjectConfig, opts GenerateOpts) ([]byte, error) {
 	}
 
 	dc := map[string]interface{}{
-		"capAdd":     []string{"NET_ADMIN", "NET_RAW"},
-		"remoteUser": "claude-bunker",
+		"capAdd":     forcedCaps,
+		"remoteUser": bunkerUser,
 	}
 	if opts.Name != "" {
 		dc["name"] = opts.Name
@@ -76,7 +76,7 @@ func Generate(cfg config.ProjectConfig, opts GenerateOpts) ([]byte, error) {
 		bc["workspace"] = cfg.Workspace
 	}
 	if len(bc) > 0 {
-		dc["customizations"] = map[string]interface{}{"claude-bunker": bc}
+		dc["customizations"] = map[string]interface{}{bunkerCustomizationsKey: bc}
 	}
 
 	body, err := json.MarshalIndent(dc, "", "  ")
