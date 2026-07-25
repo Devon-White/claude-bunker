@@ -34,9 +34,34 @@ type ResolvedFeature struct {
 
 // featureMetadata is the subset of devcontainer-feature.json we care about.
 type featureMetadata struct {
-	ID               string              `json:"id"`
-	RawInstallsAfter []json.RawMessage   `json:"installsAfter"`
-	ContainerEnv     map[string]string   `json:"containerEnv"`
+	ID               string                    `json:"id"`
+	RawInstallsAfter []json.RawMessage         `json:"installsAfter"`
+	ContainerEnv     map[string]string         `json:"containerEnv"`
+	Options          map[string]featureOption  `json:"options"`
+}
+
+// featureOption is the subset of a devcontainer-feature.json option we use.
+// The spec allows string, boolean, or enum options; Default carries whichever
+// JSON scalar the feature declared.
+type featureOption struct {
+	Default interface{} `json:"default"`
+}
+
+// mergeOptionDefaults returns a new options map: the feature's declared option
+// defaults, overridden by any user-supplied option. It never mutates userOpts.
+// Options with no default (Default == nil) are not added — an unset option with
+// no default is left for install.sh to handle.
+func mergeOptionDefaults(userOpts map[string]interface{}, meta featureMetadata) map[string]interface{} {
+	merged := make(map[string]interface{}, len(meta.Options)+len(userOpts))
+	for name, opt := range meta.Options {
+		if opt.Default != nil {
+			merged[name] = opt.Default
+		}
+	}
+	for k, v := range userOpts {
+		merged[k] = v
+	}
+	return merged
 }
 
 // installsAfterRefs parses the installsAfter field, which the devcontainer
@@ -116,12 +141,16 @@ func ResolveFeatures(features map[string]map[string]interface{}) ([]ResolvedFeat
 				// Metadata is optional; use defaults
 				meta = featureMetadata{ID: name}
 			}
-
 			if meta.ID == "" {
 				meta.ID = name
 			}
 
-			if err := writeFeatureFiles(featureDir, opts); err != nil {
+			// Merge the feature's declared option defaults under the user's
+			// options, so a feature that relies on its default option values
+			// (e.g. version) installs correctly when the user omits them.
+			effectiveOpts := mergeOptionDefaults(opts, meta)
+
+			if err := writeFeatureFiles(featureDir, effectiveOpts); err != nil {
 				return fmt.Errorf("writing feature files for %s: %w", name, err)
 			}
 
@@ -129,7 +158,7 @@ func ResolveFeatures(features map[string]map[string]interface{}) ([]ResolvedFeat
 				ID:            meta.ID,
 				Source:        ref,
 				InstallDir:    featureDir,
-				Options:       opts,
+				Options:       effectiveOpts,
 				Env:           meta.ContainerEnv,
 				InstallsAfter: meta.installsAfterRefs(),
 			}

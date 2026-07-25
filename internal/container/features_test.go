@@ -234,6 +234,68 @@ func TestWriteFeatureFiles_EmptyOptions(t *testing.T) {
 }
 
 
+func TestMergeOptionDefaults(t *testing.T) {
+	meta := featureMetadata{
+		ID: "node",
+		Options: map[string]featureOption{
+			"version": {Default: "lts"},
+			"nvmVersion": {Default: "latest"},
+		},
+	}
+
+	t.Run("applies defaults when user omits them", func(t *testing.T) {
+		got := mergeOptionDefaults(nil, meta)
+		if got["version"] != "lts" || got["nvmVersion"] != "latest" {
+			t.Errorf("defaults not applied: %+v", got)
+		}
+	})
+
+	t.Run("user value overrides default", func(t *testing.T) {
+		got := mergeOptionDefaults(map[string]interface{}{"version": "20"}, meta)
+		if got["version"] != "20" {
+			t.Errorf("user value should win: got %v", got["version"])
+		}
+		if got["nvmVersion"] != "latest" {
+			t.Errorf("unspecified option should still get its default: %v", got["nvmVersion"])
+		}
+	})
+
+	t.Run("does not mutate the caller's map", func(t *testing.T) {
+		user := map[string]interface{}{"version": "20"}
+		_ = mergeOptionDefaults(user, meta)
+		if len(user) != 1 {
+			t.Errorf("caller map was mutated: %+v", user)
+		}
+	})
+
+	t.Run("option without a default is skipped", func(t *testing.T) {
+		m := featureMetadata{Options: map[string]featureOption{"flag": {Default: nil}}}
+		got := mergeOptionDefaults(nil, m)
+		if _, present := got["flag"]; present {
+			t.Errorf("option with nil default should not be added: %+v", got)
+		}
+	})
+}
+
+func TestReadFeatureMetadata_ParsesOptions(t *testing.T) {
+	dir := t.TempDir()
+	jsonContent := `{"id":"node","options":{"version":{"type":"string","default":"lts","description":"Node version"}},"containerEnv":{"FOO":"bar"}}`
+	if err := os.WriteFile(filepath.Join(dir, "devcontainer-feature.json"), []byte(jsonContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := readFeatureMetadata(dir)
+	if err != nil {
+		t.Fatalf("readFeatureMetadata: %v", err)
+	}
+	opt, ok := meta.Options["version"]
+	if !ok {
+		t.Fatal("options.version not parsed")
+	}
+	if opt.Default != "lts" {
+		t.Errorf("default = %v, want lts", opt.Default)
+	}
+}
+
 func indexOf(features []ResolvedFeature, id string) int {
 	for i, f := range features {
 		if f.ID == id {
