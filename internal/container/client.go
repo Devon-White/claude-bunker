@@ -2,9 +2,11 @@ package container
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/client"
 )
@@ -17,8 +19,9 @@ func NewClient() (*client.Client, error) {
 		return nil, fmt.Errorf("creating Docker client: %w\n%s", err, dockerInstallHint())
 	}
 
-	_, err = cli.Ping(context.Background())
-	if err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err = cli.Ping(ctx); err != nil {
 		cli.Close()
 		return nil, fmt.Errorf("%s", dockerErrorMessage(err))
 	}
@@ -29,6 +32,12 @@ func NewClient() (*client.Client, error) {
 // dockerErrorMessage returns a user-friendly error message with actionable
 // guidance based on the type of Docker connection failure.
 func dockerErrorMessage(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Sprintf("Docker daemon did not respond within 5s: %s\n\n"+
+			"  The Docker socket is present but the daemon is not responding.\n"+
+			"  %s", err, dockerStartHint())
+	}
+
 	msg := err.Error()
 	lower := strings.ToLower(msg)
 
