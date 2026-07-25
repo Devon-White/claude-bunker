@@ -30,11 +30,14 @@ type ResolvedFeature struct {
 	Options       map[string]interface{} // effective options: feature defaults merged under user-specified values
 	Env           map[string]string      // feature's containerEnv from metadata
 	InstallsAfter []string               // OCI refs this feature should install after
+	Digest        string                 // resolved OCI digest (sha256:...) pulled for this feature
+	Version       string                 // feature version reported by devcontainer-feature.json
 }
 
 // featureMetadata is the subset of devcontainer-feature.json we care about.
 type featureMetadata struct {
 	ID               string                   `json:"id"`
+	Version          string                   `json:"version"`
 	RawInstallsAfter []json.RawMessage        `json:"installsAfter"`
 	ContainerEnv     map[string]string        `json:"containerEnv"`
 	Options          map[string]featureOption `json:"options"`
@@ -90,7 +93,7 @@ func (m featureMetadata) installsAfterRefs() []string {
 // extracts them to temp directories. The returned slice is sorted by
 // installsAfter dependencies, then alphabetically by ID.
 // The returned cleanup function removes all temp directories.
-func ResolveFeatures(features map[string]map[string]interface{}) ([]ResolvedFeature, func(), error) {
+func ResolveFeatures(features map[string]map[string]interface{}, workspace string, noCache bool) ([]ResolvedFeature, func(), error) {
 	if len(features) == 0 {
 		return nil, func() {}, nil
 	}
@@ -100,6 +103,8 @@ func ResolveFeatures(features map[string]map[string]interface{}) ([]ResolvedFeat
 		return nil, func() {}, fmt.Errorf("creating temp dir: %w", err)
 	}
 	cleanup := func() { os.RemoveAll(tmpBase) }
+
+	lock, _ := LoadLockFile(workspace)
 
 	// Sort feature names for deterministic ordering.
 	names := make([]string, 0, len(features))
@@ -132,8 +137,10 @@ func ResolveFeatures(features map[string]map[string]interface{}) ([]ResolvedFeat
 			log.Infof("Pulling feature: %s", name)
 			mu.Unlock()
 
-			if err := downloadAndExtract(ref, featureDir); err != nil {
-				return fmt.Errorf("downloading feature %s (%s): %w", name, ref, err)
+			pullRef := resolvePullRef(ref, lock, noCache)
+			digest, err := downloadAndExtract(pullRef, featureDir)
+			if err != nil {
+				return fmt.Errorf("downloading feature %s (%s): %w", name, pullRef, err)
 			}
 
 			meta, err := readFeatureMetadata(featureDir)
@@ -161,6 +168,8 @@ func ResolveFeatures(features map[string]map[string]interface{}) ([]ResolvedFeat
 				Options:       effectiveOpts,
 				Env:           meta.ContainerEnv,
 				InstallsAfter: meta.installsAfterRefs(),
+				Digest:        digest,
+				Version:       meta.Version,
 			}
 			return nil
 		})
@@ -173,24 +182,53 @@ func ResolveFeatures(features map[string]map[string]interface{}) ([]ResolvedFeat
 
 	sortFeatures(resolved)
 
+	// Write the updated lock (best-effort) keyed by the original config map
+	// key, so it matches what the user wrote in config. Done sequentially
+	// here — after g.Wait() — to avoid concurrent writes.
+	refToDigest := make(map[string]string, len(names))
+	refToVersion := make(map[string]string, len(names))
+	for i, name := range names {
+		refToDigest[name] = resolved[i].Digest
+		refToVersion[name] = resolved[i].Version
+	}
+	if err := buildLockFile(refToDigest, refToVersion).Save(workspace); err != nil {
+		log.Warnf("writing devcontainer-lock.json: %v", err)
+	}
+
 	return resolved, cleanup, nil
 }
 
+// resolvePullRef returns the OCI ref to pull for a feature: the lock's resolved
+// (digest-pinned) ref when the lock has a usable entry and this is not a rebuild;
+// otherwise the map-key ref (tag), so it resolves fresh.
+func resolvePullRef(mapKeyRef string, lock LockFile, noCache bool) string {
+	if noCache {
+		return mapKeyRef
+	}
+	if f, ok := lock.Features[mapKeyRef]; ok && f.Resolved != "" {
+		return f.Resolved
+	}
+	return mapKeyRef
+}
+
 // downloadAndExtract pulls an OCI image and extracts its layers to destDir.
-func downloadAndExtract(ref, destDir string) error {
+// It returns the resolved digest for supply-chain auditability and lockfile
+// pinning — tags are mutable, so the digest provides a pinnable reference
+// for reproducing this exact build.
+func downloadAndExtract(ref, destDir string) (string, error) {
 	img, err := crane.Pull(ref)
 	if err != nil {
-		return fmt.Errorf("pulling %s: %w", ref, err)
+		return "", fmt.Errorf("pulling %s: %w", ref, err)
 	}
-
-	// Log the resolved digest for supply-chain auditability.
-	// Tags are mutable — the digest provides a pinnable reference
-	// for reproducing this exact build.
-	if digest, err := img.Digest(); err == nil {
-		log.Infof("  %s → %s", ref, digest.String())
+	digest := ""
+	if d, err := img.Digest(); err == nil {
+		digest = d.String()
+		log.Infof("  %s → %s", ref, digest)
 	}
-
-	return extractImage(img, destDir)
+	if err := extractImage(img, destDir); err != nil {
+		return "", err
+	}
+	return digest, nil
 }
 
 // extractImage extracts all layers of an OCI image to destDir.

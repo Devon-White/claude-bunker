@@ -278,7 +278,7 @@ func TestMergeOptionDefaults(t *testing.T) {
 
 func TestReadFeatureMetadata_ParsesOptions(t *testing.T) {
 	dir := t.TempDir()
-	jsonContent := `{"id":"node","options":{"version":{"type":"string","default":"lts","description":"Node version"}},"containerEnv":{"FOO":"bar"}}`
+	jsonContent := `{"id":"node","version":"1.0.4","options":{"version":{"type":"string","default":"lts","description":"Node version"}},"containerEnv":{"FOO":"bar"}}`
 	if err := os.WriteFile(filepath.Join(dir, "devcontainer-feature.json"), []byte(jsonContent), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -293,6 +293,36 @@ func TestReadFeatureMetadata_ParsesOptions(t *testing.T) {
 	if opt.Default != "lts" {
 		t.Errorf("default = %v, want lts", opt.Default)
 	}
+	if meta.Version != "1.0.4" {
+		t.Errorf("meta.Version = %q, want %q", meta.Version, "1.0.4")
+	}
+}
+
+func TestResolvePullRef(t *testing.T) {
+	lock := LockFile{Features: map[string]LockedFeature{
+		"ghcr.io/devcontainers/features/node:1": {
+			Resolved: "ghcr.io/devcontainers/features/node@sha256:abc",
+		},
+	}}
+
+	t.Run("uses locked digest when present and not noCache", func(t *testing.T) {
+		got := resolvePullRef("ghcr.io/devcontainers/features/node:1", lock, false)
+		if got != "ghcr.io/devcontainers/features/node@sha256:abc" {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("noCache ignores the lock (fresh by tag)", func(t *testing.T) {
+		got := resolvePullRef("ghcr.io/devcontainers/features/node:1", lock, true)
+		if got != "ghcr.io/devcontainers/features/node:1" {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("unlocked feature pulls by tag", func(t *testing.T) {
+		got := resolvePullRef("ghcr.io/devcontainers/features/go:1", lock, false)
+		if got != "ghcr.io/devcontainers/features/go:1" {
+			t.Errorf("got %q", got)
+		}
+	})
 }
 
 func indexOf(features []ResolvedFeature, id string) int {

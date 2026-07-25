@@ -40,6 +40,7 @@ type BuildImageOpts struct {
 	NoCache      bool
 	LogFn        func(string)
 	Cache        *BuildCache
+	Workspace    string
 }
 
 // BuildImage builds the Docker image entirely from in-memory and embedded content.
@@ -76,7 +77,7 @@ func BuildImage(ctx context.Context, cli *client.Client, opts BuildImageOpts) er
 	var cleanupFn func()
 	if hasProjectLayers {
 		var err error
-		features, cleanupFn, err = ResolveFeatures(opts.ProjectCfg.Features)
+		features, cleanupFn, err = ResolveFeatures(opts.ProjectCfg.Features, opts.Workspace, opts.NoCache)
 		if err != nil {
 			return fmt.Errorf("resolving features: %w", err)
 		}

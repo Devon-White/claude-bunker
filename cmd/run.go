@@ -424,6 +424,7 @@ func (r *runner) buildAndCreate() {
 				Dockerfile: r.cachedDockerfile,
 				Scripts:    r.cachedScripts,
 			},
+			Workspace: r.workspace,
 		})
 		if err != nil {
 			die("Failed to build sandbox: " + err.Error())
