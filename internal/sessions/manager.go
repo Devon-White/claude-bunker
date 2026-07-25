@@ -3,14 +3,14 @@ package sessions
 import (
 	"context"
 	"fmt"
-	"sort"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/client"
 
 	"github.com/Devon-White/claude-bunker/internal/config"
 	ctr "github.com/Devon-White/claude-bunker/internal/container"
@@ -41,27 +41,14 @@ type DockerClient interface {
 // Designed as a standalone component so a future swarm orchestrator can
 // aggregate Managers from multiple Docker hosts into a unified view.
 type Manager struct {
-	cli    DockerClient
-	syncer TitleSyncer
-
-	// sessionIDCache maps "containerID:PID" → sessionID to avoid repeated
-	// exec calls into containers. PIDs are stable for the lifetime of a process.
-	sessionIDCache map[string]string
-	cacheMu        sync.Mutex
+	cli DockerClient
 }
 
 // NewManager creates a new session manager.
 func NewManager(cli DockerClient) *Manager {
 	return &Manager{
-		cli:            cli,
-		sessionIDCache: make(map[string]string),
+		cli: cli,
 	}
-}
-
-// SetTitleSyncer attaches a TitleSyncer for session-level title resolution.
-// When set, FetchSnapshot will resolve session IDs and populate titles.
-func (m *Manager) SetTitleSyncer(syncer TitleSyncer) {
-	m.syncer = syncer
 }
 
 // Client returns the underlying Docker client for operations that need
@@ -101,14 +88,10 @@ func (m *Manager) FetchSnapshot(ctx context.Context) (Snapshot, error) {
 			if err == nil && inspect.State != nil && inspect.State.StartedAt != "" {
 				cs.StartedAt, _ = time.Parse(time.RFC3339Nano, inspect.State.StartedAt)
 			}
-			cs.Sessions, _ = m.GetProcessTree(ctx, c.ID)
-
-			// Resolve session IDs and titles for claude sessions.
-			// This requires exec-ing into the container to read PID→sessionID
-			// mappings, so results are cached to avoid repeated calls.
-			if m.syncer != nil {
-				m.resolveSessionTitles(ctx, c.ID, cs.Sessions)
-			}
+			// Claude sessions come from `claude agents --json` (authoritative).
+			cs.Sessions = m.claudeSessions(ctx, c.ID)
+			// bash/shell sessions still come from the process tree.
+			cs.Sessions = append(cs.Sessions, m.bashSessions(ctx, c.ID)...)
 		}
 
 		states = append(states, cs)
@@ -217,6 +200,57 @@ func (m *Manager) GetProcessTree(ctx context.Context, containerID string) ([]Ses
 	}
 
 	return sessions, nil
+}
+
+// claudeSessions builds SessionInfo entries for the container's Claude sessions
+// from `claude agents --json`. Interactive sessions become top-level sessions;
+// background sessions (subagents) are nested under the first interactive session,
+// or promoted to their own entry if there is no interactive parent.
+func (m *Manager) claudeSessions(ctx context.Context, containerID string) []SessionInfo {
+	realCli, _ := m.cli.(*client.Client)
+	agents, err := FetchAgents(ctx, realCli, containerID)
+	if err != nil || len(agents) == 0 {
+		return nil
+	}
+	var sessions []SessionInfo
+	var subagents []SubagentInfo
+	for _, a := range agents {
+		if a.Kind == "background" {
+			subagents = append(subagents, SubagentInfo{PID: strconv.Itoa(a.PID), Name: a.Name})
+			continue
+		}
+		sessions = append(sessions, SessionInfo{
+			PID:       strconv.Itoa(a.PID),
+			Command:   "claude",
+			SessionID: a.SessionID,
+			Title:     a.Name, // Claude's authoritative name; store fallback applied in Task 5
+		})
+	}
+	if len(sessions) > 0 {
+		sessions[0].Subagents = append(sessions[0].Subagents, subagents...)
+	} else if len(subagents) > 0 {
+		// Background-only: surface them as sessions so the TUI still shows activity.
+		for _, sa := range subagents {
+			sessions = append(sessions, SessionInfo{PID: sa.PID, Command: "claude", Title: sa.Name})
+		}
+	}
+	return sessions
+}
+
+// bashSessions returns top-level bash (shell) sessions from the process tree.
+// Claude sessions are intentionally excluded — those come from claude agents --json.
+func (m *Manager) bashSessions(ctx context.Context, containerID string) []SessionInfo {
+	all, err := m.GetProcessTree(ctx, containerID)
+	if err != nil {
+		return nil
+	}
+	var out []SessionInfo
+	for _, s := range all {
+		if s.Command == "bash" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // ResolveContainer finds a container by exact or prefix match against all
@@ -403,115 +437,6 @@ func (m *Manager) RenameContainer(ctx context.Context, containerID, newName stri
 	// but the custom display name in our metadata still works.
 	_ = m.cli.ContainerRename(ctx, containerID, newName)
 	return nil
-}
-
-// resolveSessionTitles populates SessionID and Title fields for claude sessions.
-//
-// PID namespace challenge: `docker top` returns host-namespace PIDs, but Claude
-// Code writes session files using container-namespace PIDs. To bridge this gap,
-// we fetch all session metadata from the container (container PIDs → session IDs)
-// and match by checking which container PIDs are ancestors of our host PIDs
-// using `docker top`'s PPID chain. For single-session containers (the common case),
-// we match the only available session directly.
-func (m *Manager) resolveSessionTitles(ctx context.Context, containerID string, sessions []SessionInfo) {
-	// Count how many claude sessions need resolution.
-	needsResolve := false
-	for _, s := range sessions {
-		if s.Command != "claude" {
-			continue
-		}
-		cacheKey := containerID + ":" + s.PID
-		m.cacheMu.Lock()
-		_, ok := m.sessionIDCache[cacheKey]
-		m.cacheMu.Unlock()
-		if !ok {
-			needsResolve = true
-			break
-		}
-	}
-
-	// Fetch session IDs from the container if any are uncached.
-	// This is a single exec call that reads all session files.
-	if needsResolve {
-		containerSessions, err := m.syncer.ResolveSessionIDs(ctx, containerID)
-		if err == nil && len(containerSessions) > 0 {
-			// For single-session containers (common case), assign directly
-			// to all claude sessions. For multi-session, we match by process
-			// tree inspection — each container-PID from the session file
-			// should correspond to a running claude process.
-			if len(containerSessions) == 1 {
-				// Only one session in the container — assign it to all claude processes.
-				var onlySessionID string
-				for _, sid := range containerSessions {
-					onlySessionID = sid
-				}
-				for i := range sessions {
-					if sessions[i].Command == "claude" {
-						cacheKey := containerID + ":" + sessions[i].PID
-						m.cacheMu.Lock()
-						m.sessionIDCache[cacheKey] = onlySessionID
-						m.cacheMu.Unlock()
-					}
-				}
-			} else {
-				// Multiple sessions — match by PID order. Higher container
-				// PIDs correspond to newer processes, and `docker top` also
-				// returns processes in PID order, so we align them.
-				type pidSession struct {
-					pid int
-					sid string
-				}
-				var sorted []pidSession
-				for pid, sid := range containerSessions {
-					sorted = append(sorted, pidSession{pid, sid})
-				}
-				// Sort by PID ascending (matches docker top output order).
-				sort.Slice(sorted, func(i, j int) bool {
-					return sorted[i].pid < sorted[j].pid
-				})
-				claudeIdx := 0
-				for i := range sessions {
-					if sessions[i].Command == "claude" && claudeIdx < len(sorted) {
-						cacheKey := containerID + ":" + sessions[i].PID
-						m.cacheMu.Lock()
-						m.sessionIDCache[cacheKey] = sorted[claudeIdx].sid
-						m.cacheMu.Unlock()
-						claudeIdx++
-					}
-				}
-			}
-		}
-	}
-
-	// Apply cached session IDs and look up titles.
-	for i := range sessions {
-		s := &sessions[i]
-		if s.Command != "claude" {
-			continue
-		}
-		cacheKey := containerID + ":" + s.PID
-		m.cacheMu.Lock()
-		if sid, ok := m.sessionIDCache[cacheKey]; ok {
-			s.SessionID = sid
-		}
-		m.cacheMu.Unlock()
-		if s.SessionID != "" {
-			// Start with the cached title from our registry.
-			s.Title = m.syncer.GetTitle(containerID, s.SessionID)
-
-			// Always read the JSONL file to catch live renames via Claude
-			// Code's /rename command. The registry may be stale if the user
-			// renamed since the last snapshot. This costs one docker exec
-			// per claude session per snapshot, but snapshots are event-driven
-			// (not polled) so the overhead is acceptable.
-			if containerTitle := m.syncer.ReadTitleFromContainer(ctx, containerID, s.SessionID); containerTitle != "" {
-				if s.Title != containerTitle {
-					s.Title = containerTitle
-					m.syncer.PushTitle(containerID, s.SessionID, containerTitle)
-				}
-			}
-		}
-	}
 }
 
 // FormatUptime returns a human-readable duration string.

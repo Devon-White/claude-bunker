@@ -9,11 +9,16 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
+	"github.com/docker/docker/client"
 
 	ctr "github.com/Devon-White/claude-bunker/internal/container"
 )
 
 func TestWatcher_InitialSnapshot(t *testing.T) {
+	orig := execAgentsJSON
+	defer func() { execAgentsJSON = orig }()
+	execAgentsJSON = func(_ context.Context, _ *client.Client, _ string) (string, error) { return "[]", nil }
+
 	cli := &mockClient{
 		containers: []container.Summary{
 			{ID: "abc", State: "running", Labels: map[string]string{ctr.LabelKey: "project-a1b2c3d4"}},
@@ -91,6 +96,10 @@ func (m *mockEventsClient) Events(_ context.Context, _ events.ListOptions) (<-ch
 }
 
 func TestWatcher_EventTriggersRefresh(t *testing.T) {
+	orig := execAgentsJSON
+	defer func() { execAgentsJSON = orig }()
+	execAgentsJSON = func(_ context.Context, _ *client.Client, _ string) (string, error) { return "[]", nil }
+
 	eventsCh := make(chan events.Message, 1)
 	errCh := make(chan error)
 
@@ -181,6 +190,10 @@ func TestSocketListener_BasicEvent(t *testing.T) {
 }
 
 func TestWatcher_SocketTriggersRefresh(t *testing.T) {
+	orig := execAgentsJSON
+	defer func() { execAgentsJSON = orig }()
+	execAgentsJSON = func(_ context.Context, _ *client.Client, _ string) (string, error) { return "[]", nil }
+
 	tmpDir := t.TempDir()
 
 	cli := &mockClient{

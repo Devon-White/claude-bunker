@@ -8,6 +8,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
+	"github.com/docker/docker/client"
 
 	ctr "github.com/Devon-White/claude-bunker/internal/container"
 )
@@ -71,6 +72,14 @@ func TestFetchSnapshot_Empty(t *testing.T) {
 }
 
 func TestFetchSnapshot_MultipleContainers(t *testing.T) {
+	// Claude sessions now come from `claude agents --json`, not the process
+	// tree, so stub the exec call that would otherwise hit a nil Docker client.
+	orig := execAgentsJSON
+	defer func() { execAgentsJSON = orig }()
+	execAgentsJSON = func(_ context.Context, _ *client.Client, _ string) (string, error) {
+		return `[{"pid":42,"cwd":"/workspace","kind":"interactive","sessionId":"sid-alpha","status":"idle"}]`, nil
+	}
+
 	now := time.Now().Format(time.RFC3339Nano)
 	cli := &mockClient{
 		containers: []container.Summary{
@@ -138,6 +147,10 @@ func TestFetchSnapshot_MultipleContainers(t *testing.T) {
 }
 
 func TestResolveContainer_ExactMatch(t *testing.T) {
+	orig := execAgentsJSON
+	defer func() { execAgentsJSON = orig }()
+	execAgentsJSON = func(_ context.Context, _ *client.Client, _ string) (string, error) { return "[]", nil }
+
 	cli := &mockClient{
 		containers: []container.Summary{
 			{ID: "abc", State: "running", Labels: map[string]string{ctr.LabelKey: "project-a1b2c3d4"}},
@@ -178,6 +191,10 @@ func TestResolveContainer_PrefixMatch(t *testing.T) {
 }
 
 func TestResolveContainer_NoMatch(t *testing.T) {
+	orig := execAgentsJSON
+	defer func() { execAgentsJSON = orig }()
+	execAgentsJSON = func(_ context.Context, _ *client.Client, _ string) (string, error) { return "[]", nil }
+
 	cli := &mockClient{
 		containers: []container.Summary{
 			{ID: "abc", State: "running", Labels: map[string]string{ctr.LabelKey: "project-a1b2c3d4"}},
@@ -309,6 +326,29 @@ func TestGetProcessTree_BashChildOfClaude(t *testing.T) {
 	}
 	if sessions[0].Command != "claude" {
 		t.Errorf("expected claude, got %q", sessions[0].Command)
+	}
+}
+
+func TestClaudeSessionsFromAgents(t *testing.T) {
+	orig := execAgentsJSON
+	defer func() { execAgentsJSON = orig }()
+	execAgentsJSON = func(_ context.Context, _ *client.Client, _ string) (string, error) {
+		return `[
+		  {"pid":10,"cwd":"/workspace","kind":"interactive","sessionId":"sid-1","name":"fix-bug","status":"idle"},
+		  {"pid":20,"cwd":"/workspace","kind":"background","sessionId":"sid-2","name":"run tests","status":"idle","state":"blocked"}
+		]`, nil
+	}
+	mgr := NewManager(&mockClient{})
+	got := mgr.claudeSessions(context.Background(), "cid")
+	if len(got) != 1 {
+		t.Fatalf("want 1 interactive claude session, got %d: %+v", len(got), got)
+	}
+	s := got[0]
+	if s.Command != "claude" || s.SessionID != "sid-1" || s.Title != "fix-bug" || s.PID != "10" {
+		t.Errorf("session mismatch: %+v", s)
+	}
+	if len(s.Subagents) != 1 || s.Subagents[0].Name != "run tests" || s.Subagents[0].PID != "20" {
+		t.Errorf("subagent mismatch: %+v", s.Subagents)
 	}
 }
 
