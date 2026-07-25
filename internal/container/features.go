@@ -188,6 +188,9 @@ func ResolveFeatures(features map[string]map[string]interface{}, workspace strin
 	refToDigest := make(map[string]string, len(names))
 	refToVersion := make(map[string]string, len(names))
 	for i, name := range names {
+		if resolved[i].Digest == "" {
+			continue // don't lock a feature whose digest we couldn't capture
+		}
 		refToDigest[name] = resolved[i].Digest
 		refToVersion[name] = resolved[i].Version
 	}

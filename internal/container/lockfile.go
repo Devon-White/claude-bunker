@@ -80,6 +80,9 @@ func lockedResolvedRef(featureRef, digest string) string {
 func buildLockFile(refToDigest, refToVersion map[string]string) LockFile {
 	l := LockFile{Features: make(map[string]LockedFeature, len(refToDigest))}
 	for ref, digest := range refToDigest {
+		if digest == "" {
+			continue
+		}
 		l.Features[ref] = LockedFeature{
 			Version:   refToVersion[ref],
 			Resolved:  lockedResolvedRef(ref, digest),

@@ -104,3 +104,16 @@ func TestLoadLockFile_CorruptAndNull(t *testing.T) {
 		t.Error("null features must normalize to a non-nil map")
 	}
 }
+
+func TestBuildLockFile_SkipsEmptyDigest(t *testing.T) {
+	l := buildLockFile(
+		map[string]string{"ghcr.io/f/good:1": "sha256:abc", "ghcr.io/f/bad:1": ""},
+		map[string]string{"ghcr.io/f/good:1": "1.0"},
+	)
+	if _, ok := l.Features["ghcr.io/f/bad:1"]; ok {
+		t.Error("empty-digest feature must be omitted from the lock")
+	}
+	if _, ok := l.Features["ghcr.io/f/good:1"]; !ok {
+		t.Error("good feature must be present")
+	}
+}
