@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/docker/docker/client"
 	ctr "github.com/Devon-White/claude-bunker/internal/container"
+	"github.com/docker/docker/client"
 )
 
 // AgentSession is one entry from `claude agents --json` — Claude Code's
