@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/charmbracelet/huh"
@@ -17,6 +18,13 @@ var (
 	colorWarn    = lipgloss.AdaptiveColor{Light: "#CA8A04", Dark: "#FACC15"}
 	colorError   = lipgloss.AdaptiveColor{Light: "#DC2626", Dark: "#F87171"}
 	colorDim     = lipgloss.AdaptiveColor{Light: "#6B7280", Dark: "#9CA3AF"}
+)
+
+// Output streams. Seams so tests can capture output. Diagnostics go to errW
+// (stderr) to keep stdout clean for piping; payload commands write to stdout.
+var (
+	outW io.Writer = os.Stdout
+	errW io.Writer = os.Stderr
 )
 
 // --- Styles ---
@@ -38,19 +46,19 @@ var (
 
 func info(msg string) {
 	if verbosity >= 0 {
-		fmt.Println(prefixStyle.Render("[claude-bunker]"), infoMsgStyle.Render(msg))
+		fmt.Fprintln(errW, prefixStyle.Render("[claude-bunker]"), infoMsgStyle.Render(msg))
 	}
 }
 
 func verbose(msg string) {
 	if verbosity >= 1 {
-		fmt.Println(prefixStyle.Render("[claude-bunker]"), verboseMsgStyle.Render(msg))
+		fmt.Fprintln(errW, prefixStyle.Render("[claude-bunker]"), verboseMsgStyle.Render(msg))
 	}
 }
 
 func warn(msg string) {
 	if verbosity >= 0 {
-		fmt.Fprintln(os.Stderr,
+		fmt.Fprintln(errW,
 			prefixStyle.Render("[claude-bunker]"),
 			warnLabelStyle.Render("WARNING:"),
 			msg,
@@ -59,7 +67,7 @@ func warn(msg string) {
 }
 
 func die(msg string) {
-	fmt.Fprintln(os.Stderr,
+	fmt.Fprintln(errW,
 		prefixStyle.Render("[claude-bunker]"),
 		errorLabelStyle.Render("ERROR:"),
 		msg,
@@ -76,7 +84,7 @@ func die(msg string) {
 
 func success(msg string) {
 	if verbosity >= 0 {
-		fmt.Println(prefixStyle.Render("[claude-bunker]"), successMsgStyle.Render(msg))
+		fmt.Fprintln(errW, prefixStyle.Render("[claude-bunker]"), successMsgStyle.Render(msg))
 	}
 }
 
