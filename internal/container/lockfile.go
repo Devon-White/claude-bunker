@@ -59,14 +59,17 @@ func (l LockFile) Save(workspace string) error {
 	return os.WriteFile(p, data, 0o644)
 }
 
-// lockedResolvedRef converts a feature reference (with an optional tag) and a
-// digest into the spec's `resolved` form: base ref (tag stripped) + @digest.
-// It preserves a registry:port host (only the final :tag path segment is stripped).
+// lockedResolvedRef converts a feature reference (with an optional tag OR an
+// existing digest) and a digest into the spec's `resolved` form: base ref
+// (tag/digest stripped) + @digest. It preserves a registry:port host.
 func lockedResolvedRef(featureRef, digest string) string {
 	base := featureRef
-	if slash := strings.LastIndex(featureRef, "/"); slash != -1 {
-		if colon := strings.LastIndex(featureRef[slash:], ":"); colon != -1 {
-			base = featureRef[:slash+colon]
+	if at := strings.Index(base, "@"); at != -1 {
+		base = base[:at]
+	}
+	if slash := strings.LastIndex(base, "/"); slash != -1 {
+		if colon := strings.LastIndex(base[slash:], ":"); colon != -1 {
+			base = base[:slash+colon]
 		}
 	}
 	return base + "@" + digest
