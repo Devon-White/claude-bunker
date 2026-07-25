@@ -104,4 +104,33 @@ func TestWriteDevContainer(t *testing.T) {
 	if len(loaded.Exclude) != 1 {
 		t.Errorf("exclude lost: %+v", loaded.Exclude)
 	}
+	if _, ok := loaded.Features["ghcr.io/anthropics/devcontainer-features/claude-code:1"]; ok {
+		t.Error("claude-code feature must be stripped from the engine config on load")
+	}
+}
+
+// TestLoadConfig_ExpandsGhTokenBeforeAuth locks the ordering of the single
+// riskiest line in loadConfig: config.ExpandProjectConfig(&cfg) must run
+// before auth resolution reads GhToken, otherwise a raw ${VAR} reference
+// would leak into the container instead of its resolved value.
+func TestLoadConfig_ExpandsGhTokenBeforeAuth(t *testing.T) {
+	ws := t.TempDir()
+	dir := filepath.Join(ws, ".devcontainer")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"customizations":{"claude-bunker":{"ghToken":"${CB_TEST_GH_TOKEN}"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "devcontainer.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CB_TEST_GH_TOKEN", "resolved-token-value")
+
+	r := &runner{workspace: ws}
+	r.loadConfig(bunkerFlags{})
+	if r.projectCfg.GhToken != "resolved-token-value" {
+		t.Errorf("ghToken not expanded in projectCfg: %q", r.projectCfg.GhToken)
+	}
+	if r.auth.GhToken != "resolved-token-value" {
+		t.Errorf("auth.GhToken must be the EXPANDED token (expand must run before auth resolution): %q", r.auth.GhToken)
+	}
 }

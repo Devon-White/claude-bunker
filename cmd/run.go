@@ -313,6 +313,18 @@ func (r *runner) loadConfig(flags bunkerFlags) {
 	}
 	// Expand ${VAR} references for runtime use (auth token, firewall domains, env).
 	config.ExpandProjectConfig(&cfg)
+
+	// Fail-closed: reject invalid allowDomains patterns (shell metacharacters,
+	// over-broad wildcards, empty segments) before they reach the sandbox
+	// allowlist. Runs after expansion so raw ${VAR} refs are already resolved.
+	domErr := config.NormalizeDomains(&cfg)
+	if fatal := failClosed(domErr, flags.force, "Fix allowDomains in .devcontainer/devcontainer.json, or re-run with --force."); fatal != nil {
+		die("Invalid allowDomains: " + fatal.Error())
+	}
+	if domErr != nil {
+		warn("Continuing despite invalid allowDomains (--force): " + domErr.Error())
+	}
+
 	r.projectCfg = cfg
 
 	// Resolve auth tokens: CLI flags > config > env vars

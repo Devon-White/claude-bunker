@@ -155,6 +155,16 @@ func validateDomains(domains []string) error {
 	return nil
 }
 
+// NormalizeDomains trims whitespace from each allowDomains entry and validates
+// the patterns, returning an error on the first invalid one. Used by the runtime
+// read path after ${VAR} expansion.
+func NormalizeDomains(cfg *ProjectConfig) error {
+	for i, d := range cfg.AllowDomains {
+		cfg.AllowDomains[i] = strings.TrimSpace(d)
+	}
+	return validateDomains(cfg.AllowDomains)
+}
+
 // ConfigPath returns the path to .claude/.claude-bunker/config.json in the given workspace.
 func ConfigPath(workspace string) string {
 	return filepath.Join(workspace, ".claude", ".claude-bunker", "config.json")

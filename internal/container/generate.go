@@ -100,8 +100,9 @@ func GenerateDockerfile(opts DockerfileOpts) (string, error) {
 	//
 	// TRUST BOUNDARY: onCreateCommand runs during `docker build` with UNRESTRICTED
 	// network access — the iptables firewall is only configured at container runtime,
-	// not build time. A malicious config.json could exfiltrate data during build.
-	// Users should review config.json before running claude-bunker on untrusted repos.
+	// not build time. A malicious .devcontainer/devcontainer.json could exfiltrate data
+	// during build. Users should review .devcontainer/devcontainer.json before running
+	// claude-bunker on untrusted repos.
 	// This matches the devcontainer trust model (VS Code has the same issue).
 	if opts.OnCreateCommand != "" {
 		b.WriteString("\n# onCreateCommand\n")

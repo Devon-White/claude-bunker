@@ -413,13 +413,14 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 
 	// 5. Run postStartCommand if configured.
 	//
-	// TRUST BOUNDARY: postStartCommand comes from the project's config.json,
-	// which lives inside the cloned repository. A malicious config.json can
-	// execute arbitrary shell commands here — this is inherent to the
-	// devcontainer model (VS Code has the same issue with its workspace trust
-	// model). Users should review config.json before running claude-bunker on
-	// untrusted repos. The firewall limits blast radius by restricting network
-	// access, but local filesystem access within /workspace is unrestricted.
+	// TRUST BOUNDARY: postStartCommand comes from the project's
+	// .devcontainer/devcontainer.json, which lives inside the cloned repository.
+	// A malicious .devcontainer/devcontainer.json can execute arbitrary shell
+	// commands here — this is inherent to the devcontainer model (VS Code has
+	// the same issue with its workspace trust model). Users should review
+	// .devcontainer/devcontainer.json before running claude-bunker on untrusted
+	// repos. The firewall limits blast radius by restricting network access,
+	// but local filesystem access within /workspace is unrestricted.
 	if opts.PostStartCommand != "" {
 		_, err = ExecNonInteractive(ctx, cli, containerID, ContainerUser,
 			[]string{"sh", "-c", opts.PostStartCommand})

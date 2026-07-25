@@ -104,3 +104,22 @@ func TestValidateDomains(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeDomains(t *testing.T) {
+	// Trims whitespace before validating.
+	cfg := ProjectConfig{AllowDomains: []string{"  example.com  ", "*.registry.io"}}
+	if err := NormalizeDomains(&cfg); err != nil {
+		t.Fatalf("NormalizeDomains unexpected error: %v", err)
+	}
+	if cfg.AllowDomains[0] != "example.com" {
+		t.Errorf("AllowDomains[0] = %q, want trimmed %q", cfg.AllowDomains[0], "example.com")
+	}
+
+	// Rejects invalid patterns (fail-closed on the runtime read path).
+	for _, bad := range [][]string{{"*"}, {"a b.com"}} {
+		cfg := ProjectConfig{AllowDomains: bad}
+		if err := NormalizeDomains(&cfg); err == nil {
+			t.Errorf("NormalizeDomains(%v) should have failed", bad)
+		}
+	}
+}
