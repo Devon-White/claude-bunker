@@ -342,6 +342,23 @@ func (r *runner) resolveNaming() {
 	r.extraDomains = append(r.extraDomains, pluginDomains...)
 }
 
+// lockedFeatureDigests returns the resolved feature digests from the committed
+// devcontainer-lock.json, intersected with the features actually in the current
+// config (so removed features don't leave phantom digests in the fingerprint).
+func (r *runner) lockedFeatureDigests() map[string]string {
+	digests := map[string]string{}
+	lock, err := container.LoadLockFile(r.workspace)
+	if err != nil {
+		return digests
+	}
+	for ref := range r.projectCfg.Features {
+		if f, ok := lock.Features[ref]; ok && f.Integrity != "" {
+			digests[ref] = f.Integrity
+		}
+	}
+	return digests
+}
+
 // resolveContainer checks fingerprints and existing container state to decide
 // whether to reuse, recreate, or rebuild.
 func (r *runner) resolveContainer() {
@@ -351,18 +368,12 @@ func (r *runner) resolveContainer() {
 		scriptMap[f.Name] = f.Content
 	}
 	r.cachedDockerfile = container.GenerateBaseDockerfile()
-	featureDigests := map[string]string{}
-	if lock, err := container.LoadLockFile(r.workspace); err == nil {
-		for ref, f := range lock.Features {
-			featureDigests[ref] = f.Integrity
-		}
-	}
 	r.buildInput = config.BuildInput{
 		Version:        Version,
 		Dockerfile:     r.cachedDockerfile,
 		Scripts:        scriptMap,
 		ProjectCfg:     r.projectCfg,
-		FeatureDigests: featureDigests,
+		FeatureDigests: r.lockedFeatureDigests(),
 	}
 
 	r.fpResult = config.CompareFingerprints(r.buildInput, r.containerName)
@@ -436,6 +447,12 @@ func (r *runner) buildAndCreate() {
 		if err != nil {
 			die("Failed to build sandbox: " + err.Error())
 		}
+
+		// The build (re)wrote devcontainer-lock.json; recompute the fingerprint from
+		// the post-build lock so the saved hash matches on-disk state and the next
+		// run doesn't rebuild spuriously.
+		r.buildInput.FeatureDigests = r.lockedFeatureDigests()
+		r.fpResult = config.CompareFingerprints(r.buildInput, r.containerName)
 	} else {
 		info("Starting sandbox...")
 	}

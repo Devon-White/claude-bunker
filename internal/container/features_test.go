@@ -306,20 +306,26 @@ func TestResolvePullRef(t *testing.T) {
 	}}
 
 	t.Run("uses locked digest when present and not noCache", func(t *testing.T) {
-		got := resolvePullRef("ghcr.io/devcontainers/features/node:1", lock, false)
+		got := resolvePullRef("ghcr.io/devcontainers/features/node:1", "ghcr.io/devcontainers/features/node:1", lock, false)
 		if got != "ghcr.io/devcontainers/features/node@sha256:abc" {
 			t.Errorf("got %q", got)
 		}
 	})
 	t.Run("noCache ignores the lock (fresh by tag)", func(t *testing.T) {
-		got := resolvePullRef("ghcr.io/devcontainers/features/node:1", lock, true)
+		got := resolvePullRef("ghcr.io/devcontainers/features/node:1", "ghcr.io/devcontainers/features/node:1", lock, true)
 		if got != "ghcr.io/devcontainers/features/node:1" {
 			t.Errorf("got %q", got)
 		}
 	})
 	t.Run("unlocked feature pulls by tag", func(t *testing.T) {
-		got := resolvePullRef("ghcr.io/devcontainers/features/go:1", lock, false)
+		got := resolvePullRef("ghcr.io/devcontainers/features/go:1", "ghcr.io/devcontainers/features/go:1", lock, false)
 		if got != "ghcr.io/devcontainers/features/go:1" {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("lock key can differ from fallback ref", func(t *testing.T) {
+		got := resolvePullRef("ghcr.io/devcontainers/features/node:1", "ghcr.io/devcontainers/features/node:latest", lock, false)
+		if got != "ghcr.io/devcontainers/features/node@sha256:abc" {
 			t.Errorf("got %q", got)
 		}
 	})

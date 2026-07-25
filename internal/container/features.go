@@ -137,7 +137,7 @@ func ResolveFeatures(features map[string]map[string]interface{}, workspace strin
 			log.Infof("Pulling feature: %s", name)
 			mu.Unlock()
 
-			pullRef := resolvePullRef(ref, lock, noCache)
+			pullRef := resolvePullRef(name, ref, lock, noCache)
 			digest, err := downloadAndExtract(pullRef, featureDir)
 			if err != nil {
 				return fmt.Errorf("downloading feature %s (%s): %w", name, pullRef, err)
@@ -202,16 +202,17 @@ func ResolveFeatures(features map[string]map[string]interface{}, workspace strin
 }
 
 // resolvePullRef returns the OCI ref to pull for a feature: the lock's resolved
-// (digest-pinned) ref when the lock has a usable entry and this is not a rebuild;
-// otherwise the map-key ref (tag), so it resolves fresh.
-func resolvePullRef(mapKeyRef string, lock LockFile, noCache bool) string {
+// (digest-pinned) ref when the lock has an entry under lockKey and this is not a
+// rebuild; otherwise fallbackRef (the fresh tag ref). lockKey MUST be the config
+// map key, matching how the lock is written.
+func resolvePullRef(lockKey, fallbackRef string, lock LockFile, noCache bool) string {
 	if noCache {
-		return mapKeyRef
+		return fallbackRef
 	}
-	if f, ok := lock.Features[mapKeyRef]; ok && f.Resolved != "" {
+	if f, ok := lock.Features[lockKey]; ok && f.Resolved != "" {
 		return f.Resolved
 	}
-	return mapKeyRef
+	return fallbackRef
 }
 
 // downloadAndExtract pulls an OCI image and extracts its layers to destDir.
