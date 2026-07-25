@@ -55,3 +55,13 @@ func TestEncodeProjectPath_Deterministic(t *testing.T) {
 		t.Errorf("encodeProjectPath is not deterministic: %q vs %q", a, b)
 	}
 }
+
+func TestEncodeContainerProjectPath(t *testing.T) {
+	// The container workspace is always POSIX /workspace, regardless of host OS.
+	if got := encodeContainerProjectPath("/workspace"); got != "-workspace" {
+		t.Errorf("encodeContainerProjectPath(/workspace) = %q, want -workspace", got)
+	}
+	if got := encodeContainerProjectPath("/home/claude-bunker/x"); got != "-home-claude-bunker-x" {
+		t.Errorf("got %q", got)
+	}
+}

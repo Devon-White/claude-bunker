@@ -183,20 +183,58 @@ func SeedSessionHistory(ctx context.Context, cli *client.Client, containerID, wo
 	}
 
 	// Copy session files into the container with correct ownership in a single exec.
-	containerSessionDir := container.ContainerHome + "/.claude/projects/" + encodeProjectPath(container.ContainerWorkspace) + "/"
+	containerSessionDir := container.ContainerHome + "/.claude/projects/" + encodeContainerProjectPath(container.ContainerWorkspace) + "/"
+
+	// Guard against rolling back in-container progress: skip host files older
+	// than an existing container file of the same name.
+	containerMTimes := containerSessionMTimes(ctx, cli, containerID, containerSessionDir)
+
 	if err := container.CopyDirToContainerExecWithChown(ctx, cli, containerID, hostSessionDir, containerSessionDir,
 		container.ContainerUserGroup,
 		func(relPath string, isDir bool) bool {
 			if isDir {
 				return false // always include directories for tar structure
 			}
-			_, ok := allowed[filepath.ToSlash(relPath)]
-			return !ok // skip files not in the allowed set
+			slash := filepath.ToSlash(relPath)
+			if _, ok := allowed[slash]; !ok {
+				return true // skip: not selected by size/count limits
+			}
+			base := slash
+			if i := strings.LastIndex(base, "/"); i >= 0 {
+				base = base[i+1:]
+			}
+			if cts, ok := containerMTimes[base]; ok {
+				if info, err := os.Stat(filepath.Join(hostSessionDir, relPath)); err == nil {
+					if info.ModTime().Unix() <= cts {
+						return true // skip: container copy is newer or equal
+					}
+				}
+			}
+			return false // include
 		}); err != nil {
 		return fmt.Errorf("copying session history: %w", err)
 	}
 
 	return nil
+}
+
+// containerSessionMTimes returns basename -> mtime(unix secs) for *.jsonl files
+// already in the container's session dir. Best-effort; empty map on error.
+func containerSessionMTimes(ctx context.Context, cli *client.Client, containerID, dir string) map[string]int64 {
+	out, err := container.ExecNonInteractive(ctx, cli, containerID, container.ContainerUser,
+		[]string{"sh", "-c", "cd '" + dir + "' 2>/dev/null && for f in *.jsonl; do [ -f \"$f\" ] && printf '%s %s\\n' \"$(stat -c %Y \"$f\")\" \"$f\"; done"})
+	res := map[string]int64{}
+	if err != nil {
+		return res
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		var ts int64
+		var name string
+		if _, e := fmt.Sscanf(line, "%d %s", &ts, &name); e == nil && name != "" {
+			res[name] = ts
+		}
+	}
+	return res
 }
 
 // sessionFileInfo holds metadata for a file in the session directory.
@@ -306,4 +344,12 @@ func encodeProjectPath(path string) string {
 	encoded = strings.ReplaceAll(encoded, "/", "-")
 
 	return encoded
+}
+
+// encodeContainerProjectPath encodes a POSIX container path the way Claude Code
+// encodes project dirs (replace "/" with "-"). Unlike encodeProjectPath, it does
+// NOT call filepath.Abs, so it is correct on Windows hosts (the container path is
+// always POSIX, e.g. /workspace -> -workspace).
+func encodeContainerProjectPath(containerPath string) string {
+	return strings.ReplaceAll(containerPath, "/", "-")
 }
