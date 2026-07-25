@@ -1,6 +1,11 @@
 package sessions
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/docker/docker/client"
+)
 
 const agentsFixture = `[
   {"pid":123,"cwd":"/workspace","kind":"interactive","startedAt":1782936561306,"sessionId":"895a6ba5-1e40-4d94-96f7-9a3c0b1a080a","name":"fix-auth-bug","status":"idle"},
@@ -42,5 +47,28 @@ func TestParseAgents_Empty(t *testing.T) {
 func TestParseAgents_Malformed(t *testing.T) {
 	if _, err := parseAgents([]byte("not json")); err == nil {
 		t.Error("expected error on malformed JSON")
+	}
+}
+
+func TestFetchAgents_FiltersToWorkspace(t *testing.T) {
+	orig := execAgentsJSON
+	defer func() { execAgentsJSON = orig }()
+	// Stub returns the fixture (one /workspace interactive, one /workspace waiting, one /other background).
+	execAgentsJSON = func(_ context.Context, _ *client.Client, _ string) (string, error) {
+		return agentsFixture, nil
+	}
+
+	got, err := FetchAgents(context.Background(), nil, "cid")
+	if err != nil {
+		t.Fatalf("FetchAgents: %v", err)
+	}
+	// Only the two /workspace sessions should remain (the /other one is filtered out).
+	if len(got) != 2 {
+		t.Fatalf("want 2 workspace sessions, got %d: %+v", len(got), got)
+	}
+	for _, s := range got {
+		if s.CWD != "/workspace" {
+			t.Errorf("non-workspace session leaked: %+v", s)
+		}
 	}
 }

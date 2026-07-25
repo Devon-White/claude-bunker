@@ -1,8 +1,12 @@
 package sessions
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/docker/docker/client"
+	ctr "github.com/Devon-White/claude-bunker/internal/container"
 )
 
 // AgentSession is one entry from `claude agents --json` — Claude Code's
@@ -44,4 +48,32 @@ func parseAgents(data []byte) ([]AgentSession, error) {
 		})
 	}
 	return out, nil
+}
+
+// execAgentsJSON runs `claude agents --json --cwd /workspace` in the container
+// and returns stdout. Overridable in tests.
+var execAgentsJSON = func(ctx context.Context, cli *client.Client, containerID string) (string, error) {
+	return ctr.ExecNonInteractive(ctx, cli, containerID, ctr.ContainerUser,
+		[]string{"claude", "agents", "--json", "--cwd", ctr.ContainerWorkspace})
+}
+
+// FetchAgents enumerates the container's Claude sessions via
+// `claude agents --json`, scoped to the /workspace cwd. Returns an empty slice
+// (not an error) when there are no sessions.
+func FetchAgents(ctx context.Context, cli *client.Client, containerID string) ([]AgentSession, error) {
+	out, err := execAgentsJSON(ctx, cli, containerID)
+	if err != nil {
+		return nil, fmt.Errorf("running claude agents --json: %w", err)
+	}
+	all, err := parseAgents([]byte(out))
+	if err != nil {
+		return nil, err
+	}
+	scoped := make([]AgentSession, 0, len(all))
+	for _, s := range all {
+		if s.CWD == ctr.ContainerWorkspace {
+			scoped = append(scoped, s)
+		}
+	}
+	return scoped, nil
 }
