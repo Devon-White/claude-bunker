@@ -98,3 +98,32 @@ func TestCommandToString(t *testing.T) {
 		}
 	}
 }
+
+func TestParse_Malformed(t *testing.T) {
+	if _, err := Parse([]byte("{not valid json"), nil); err == nil {
+		t.Error("malformed devcontainer.json must return an error")
+	}
+}
+
+func TestToProjectConfig_MissingCustomizations(t *testing.T) {
+	dc, err := Parse([]byte(`{"image":"x"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := ToProjectConfig(dc) // must not panic; extras are zero-value
+	if cfg.Exclude != nil || cfg.Plugins != "" {
+		t.Errorf("missing customizations should yield zero extras: %+v", cfg)
+	}
+}
+
+func TestCommandToString_ObjectAndNull(t *testing.T) {
+	if got := commandToString([]byte(`{"a":"x"}`)); got != "" {
+		t.Errorf("object command → empty, got %q", got)
+	}
+	if got := commandToString([]byte(`null`)); got != "" {
+		t.Errorf("null command → empty, got %q", got)
+	}
+	if got := commandToString(nil); got != "" {
+		t.Errorf("nil command → empty, got %q", got)
+	}
+}

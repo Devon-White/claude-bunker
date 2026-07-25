@@ -61,3 +61,25 @@ func TestGenerate(t *testing.T) {
 		t.Error("customizations namespace missing")
 	}
 }
+
+func TestGenerate_OmitsLiteralGhToken(t *testing.T) {
+	cfg := config.ProjectConfig{GhToken: "ghp_literalSecret123"}
+	data, err := Generate(cfg, GenerateOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "ghp_literalSecret123") {
+		t.Error("a literal ghToken must NOT be written to the committed devcontainer.json")
+	}
+}
+
+func TestGenerate_KeepsEnvRefGhToken(t *testing.T) {
+	cfg := config.ProjectConfig{GhToken: "${GH_TOKEN}"}
+	data, err := Generate(cfg, GenerateOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "${GH_TOKEN}") {
+		t.Error("a ${VAR} ghToken reference should be preserved")
+	}
+}

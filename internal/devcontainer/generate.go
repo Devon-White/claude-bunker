@@ -2,7 +2,9 @@ package devcontainer
 
 import (
 	"encoding/json"
+	"strings"
 
+	bunkerlog "github.com/Devon-White/claude-bunker/internal/log"
 	"github.com/Devon-White/claude-bunker/internal/config"
 )
 
@@ -15,6 +17,13 @@ type GenerateOpts struct {
 	Name              string
 	Image             string
 	ClaudeCodeFeature string // OCI ref for the claude-code feature; "" to omit
+}
+
+// isEnvRef reports whether s is an environment-variable reference (${VAR} or $VAR)
+// rather than a literal value. Literal secrets must not be written to the
+// committed devcontainer.json.
+func isEnvRef(s string) bool {
+	return strings.Contains(s, "${") || strings.HasPrefix(s, "$")
 }
 
 // Generate produces a spec-conformant devcontainer.json (prefixed with the
@@ -67,7 +76,11 @@ func Generate(cfg config.ProjectConfig, opts GenerateOpts) ([]byte, error) {
 		bc["plugins"] = cfg.Plugins
 	}
 	if cfg.GhToken != "" {
-		bc["ghToken"] = cfg.GhToken
+		if isEnvRef(cfg.GhToken) {
+			bc["ghToken"] = cfg.GhToken
+		} else {
+			bunkerlog.Warn("ghToken looks like a literal secret; omitting it from devcontainer.json. Pass it via --gh-token or the $GH_TOKEN env var, or use a \"${GH_TOKEN}\" reference.")
+		}
 	}
 	if cfg.SeedHistory != nil {
 		bc["seedHistory"] = *cfg.SeedHistory
