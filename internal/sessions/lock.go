@@ -3,6 +3,8 @@ package sessions
 import (
 	"os"
 	"time"
+
+	"github.com/Devon-White/claude-bunker/internal/log"
 )
 
 // withFileLock runs fn while holding an exclusive advisory lock on <path>.lock.
@@ -12,7 +14,7 @@ import (
 func withFileLock(path string, fn func() error) error {
 	lockPath := path + ".lock"
 	const staleAfter = 10 * time.Second
-	deadline := timeNow().Add(5 * time.Second)
+	deadline := timeNow().Add(15 * time.Second)
 
 	for {
 		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -31,11 +33,12 @@ func withFileLock(path string, fn func() error) error {
 		if timeNow().After(deadline) {
 			// Give up on the lock rather than block forever; run fn anyway so a
 			// wedged lock degrades to best-effort instead of a hang.
+			log.Warn("session store lock " + lockPath + " could not be acquired; proceeding without it")
 			return fn()
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 }
 
-// timeNow is a seam for deterministic tests (not currently overridden).
+// timeNow is a seam for deterministic tests.
 var timeNow = time.Now
