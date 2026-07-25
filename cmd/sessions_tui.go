@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
 
@@ -454,20 +454,43 @@ func (m sessionsModel) handleRename(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func attachAndCleanup(cli *client.Client, containerID string, claudeCmd []string) error {
 	ctx := context.Background()
 	command := wrapWithAuth(ctx, cli, containerID, claudeCmd)
-	exitCode, _, err := ctr.ExecInteractive(ctx, cli, containerID, ctr.ContainerUser, command)
+	exitCode, execID, err := ctr.ExecInteractive(ctx, cli, containerID, ctr.ContainerUser, command)
 	if err != nil {
 		return err
 	}
 
-	// Stop the container in the background so the user returns to their
-	// terminal immediately. The Docker daemon handles cleanup async.
-	info("Stopping container...")
-	_ = exec.Command("docker", "kill", containerID).Start()
+	teardownAfterSession(ctx, cli, containerID, execID, false, false)
 
 	if exitCode != 0 {
 		return fmt.Errorf("session exited with code %d", exitCode)
 	}
 	return nil
+}
+
+// shouldStopAfterSession decides whether to tear down the container when an
+// attached session exits. Fails closed: when other sessions are active or the
+// check errored, the container is left running unless --force.
+func shouldStopAfterSession(keep, otherActive bool, checkErr error, force bool) bool {
+	if keep {
+		return false
+	}
+	if checkErr != nil || otherActive {
+		return force
+	}
+	return true
+}
+
+// teardownAfterSession stops the container via the Docker API (SIGTERM, 10s
+// grace) only when shouldStopAfterSession says it is safe.
+func teardownAfterSession(ctx context.Context, cli *client.Client, containerID, myExecID string, keep, force bool) {
+	active, err := ctr.HasOtherActiveSessions(ctx, cli, containerID, myExecID)
+	if !shouldStopAfterSession(keep, active, err, force) {
+		info("Leaving container running (other sessions active or --keep).")
+		return
+	}
+	info("Stopping container...")
+	timeout := 10
+	_ = cli.ContainerStop(ctx, containerID, dockercontainer.StopOptions{Timeout: &timeout})
 }
 
 // reinjectOnStart re-injects auth secrets after starting a stopped container.

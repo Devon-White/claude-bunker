@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os/exec"
 
 	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
@@ -66,19 +65,15 @@ func runSessionsAttach(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("attach requires a real Docker client")
 	}
 
-	exitCode, _, err := ctr.ExecInteractive(ctx, dockerCli, c.ID, ctr.ContainerUser, command)
+	exitCode, execID, err := ctr.ExecInteractive(ctx, dockerCli, c.ID, ctr.ContainerUser, command)
 	if err != nil {
 		return fmt.Errorf("exec: %w", err)
 	}
 
-	// Stop the container in the background so the user returns to their
-	// terminal immediately. The Docker daemon handles cleanup async.
-	// Use --keep to prevent auto-stop.
+	// Stop the container only if it's safe (no other active sessions) unless
+	// --keep is set. Use --keep to prevent auto-stop.
 	keep, _ := cmd.Flags().GetBool("keep")
-	if !keep {
-		info("Stopping container...")
-		_ = exec.Command("docker", "kill", c.ID).Start()
-	}
+	teardownAfterSession(ctx, dockerCli, c.ID, execID, keep, false)
 
 	if exitCode != 0 {
 		return fmt.Errorf("session exited with code %d", exitCode)
