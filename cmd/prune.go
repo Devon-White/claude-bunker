@@ -42,8 +42,12 @@ func runPrune(cmd *cobra.Command, args []string) error {
 	force, _ := cmd.Flags().GetBool("force")
 	all, _ := cmd.Flags().GetBool("all")
 
-	pruneVolumes(ctx, cli, force, all)
-	pruneImages(ctx, cli, force, all)
+	if err := pruneVolumes(ctx, cli, force, all); err != nil {
+		return err
+	}
+	if err := pruneImages(ctx, cli, force, all); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -65,16 +69,16 @@ type pruneSpec[T any] struct {
 }
 
 // pruneResources implements the generic list -> select -> confirm -> remove pattern.
-func pruneResources[T any](ctx context.Context, cli *dockerclient.Client, force, all bool, spec pruneSpec[T]) {
+func pruneResources[T any](ctx context.Context, cli *dockerclient.Client, force, all bool, spec pruneSpec[T]) error {
 	items, err := spec.list(ctx, cli)
 	if err != nil {
 		warn("Failed to list " + spec.resourceName + "s: " + err.Error())
-		return
+		return nil
 	}
 
 	if len(items) == 0 {
 		info("No claude-bunker " + spec.resourceName + "s found.")
-		return
+		return nil
 	}
 
 	groupLabels, grouped := spec.groups(items)
@@ -89,7 +93,7 @@ func pruneResources[T any](ctx context.Context, cli *dockerclient.Client, force,
 		}
 	} else if !isTTY() {
 		warn("Non-interactive terminal detected. Use --all to select all, or --force to skip prompts.")
-		return
+		return nil
 	} else {
 		options := make([]huh.Option[int], len(groupLabels))
 		for i, lbl := range groupLabels {
@@ -109,10 +113,10 @@ func pruneResources[T any](ctx context.Context, cli *dockerclient.Client, force,
 		if err != nil {
 			if errors.Is(err, huh.ErrUserAborted) {
 				info("Aborted.")
-				return
+				return nil
 			}
 			warn("Selection failed: " + err.Error())
-			return
+			return nil
 		}
 	}
 
@@ -123,13 +127,17 @@ func pruneResources[T any](ctx context.Context, cli *dockerclient.Client, force,
 
 	if len(toRemove) == 0 {
 		info("Nothing to remove.")
-		return
+		return nil
 	}
 
 	if !force {
-		if !confirmAction(fmt.Sprintf("Remove %d %s(s)?", len(toRemove), spec.resourceName)) {
+		ok, err := confirmAction(fmt.Sprintf("Remove %d %s(s)?", len(toRemove), spec.resourceName))
+		if err != nil {
+			return err
+		}
+		if !ok {
 			info("Aborted.")
-			return
+			return nil
 		}
 	}
 
@@ -144,10 +152,11 @@ func pruneResources[T any](ctx context.Context, cli *dockerclient.Client, force,
 	}
 
 	success(fmt.Sprintf("Pruned %d %s(s).", removed, spec.resourceName))
+	return nil
 }
 
-func pruneVolumes(ctx context.Context, cli *dockerclient.Client, force, all bool) {
-	pruneResources(ctx, cli, force, all, pruneSpec[container.BunkerVolume]{
+func pruneVolumes(ctx context.Context, cli *dockerclient.Client, force, all bool) error {
+	return pruneResources(ctx, cli, force, all, pruneSpec[container.BunkerVolume]{
 		resourceName: "volume",
 		list:         container.ListBunkerVolumesDetailed,
 		groups: func(items []container.BunkerVolume) ([]string, [][]container.BunkerVolume) {
@@ -174,8 +183,8 @@ func pruneVolumes(ctx context.Context, cli *dockerclient.Client, force, all bool
 	})
 }
 
-func pruneImages(ctx context.Context, cli *dockerclient.Client, force, all bool) {
-	pruneResources(ctx, cli, force, all, pruneSpec[container.BunkerImage]{
+func pruneImages(ctx context.Context, cli *dockerclient.Client, force, all bool) error {
+	return pruneResources(ctx, cli, force, all, pruneSpec[container.BunkerImage]{
 		resourceName: "image",
 		list:         container.ListBunkerImages,
 		groups: func(items []container.BunkerImage) ([]string, [][]container.BunkerImage) {

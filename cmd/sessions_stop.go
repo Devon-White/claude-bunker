@@ -51,7 +51,11 @@ func runSessionsStop(cmd *cobra.Command, args []string) error {
 
 	force, _ := cmd.Flags().GetBool("force")
 	if !force {
-		if !confirmAction(fmt.Sprintf("Stop container %s?", c.DisplayName)) {
+		ok, err := confirmAction(fmt.Sprintf("Stop container %s?", c.DisplayName))
+		if err != nil {
+			return err
+		}
+		if !ok {
 			return nil
 		}
 	}

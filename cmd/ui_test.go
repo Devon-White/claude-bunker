@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -55,5 +56,19 @@ func TestDiagnosticsGoToStderr(t *testing.T) {
 		if !bytes.Contains(errb.Bytes(), []byte(want)) {
 			t.Errorf("stderr missing %q; got %q", want, errb.String())
 		}
+	}
+}
+
+func TestConfirmAction_NonInteractiveErrors(t *testing.T) {
+	orig := stdinIsTTY
+	stdinIsTTY = func() bool { return false }
+	t.Cleanup(func() { stdinIsTTY = orig })
+
+	ok, err := confirmAction("Proceed?")
+	if ok {
+		t.Error("must not return true in a non-interactive context")
+	}
+	if !errors.Is(err, errNonInteractiveConfirm) {
+		t.Errorf("must return errNonInteractiveConfirm, got %v", err)
 	}
 }

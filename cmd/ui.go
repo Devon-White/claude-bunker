@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -161,10 +162,14 @@ func applyColorProfile(noColorFlag bool) {
 	}
 }
 
-// confirmAction shows a yes/no prompt. Returns false on abort, error, or "No".
-func confirmAction(title string) bool {
-	if !isTTY() {
-		return false
+var errNonInteractiveConfirm = errors.New("cannot prompt for confirmation in a non-interactive context; pass --force to skip the prompt")
+
+// confirmAction shows a yes/no prompt and returns the choice. In a non-interactive
+// context it returns errNonInteractiveConfirm rather than a silent "no", so
+// scripts get a non-zero exit instead of a false success.
+func confirmAction(title string) (bool, error) {
+	if !stdinIsTTY() {
+		return false, errNonInteractiveConfirm
 	}
 	var confirmed bool
 	err := huh.NewForm(
@@ -176,7 +181,10 @@ func confirmAction(title string) bool {
 				Value(&confirmed),
 		),
 	).Run()
-	return err == nil && confirmed
+	if err != nil {
+		return false, nil // treat a form error/abort as "no"
+	}
+	return confirmed, nil
 }
 
 // --- Version renderer ---
