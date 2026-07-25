@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	ctr "github.com/Devon-White/claude-bunker/internal/container"
 	"github.com/docker/docker/client"
@@ -52,7 +53,19 @@ func parseAgents(data []byte) ([]AgentSession, error) {
 
 // execAgentsJSON runs `claude agents --json --cwd /workspace` in the container
 // and returns stdout. Overridable in tests.
+//
+// This exec is driven both by the TUI's unconditional 3-second poll and by
+// every one-shot CLI command (which pass context.Background(), i.e. no
+// caller-supplied deadline). `claude agents --json` is a full Node process;
+// if it ever hangs (container under load, claude wedged), an unbounded exec
+// would block FetchSnapshot forever, freezing the TUI poll goroutine or
+// hanging a one-shot command indefinitely. The 5-second timeout bounds that
+// blast radius. exec.go's execCore closes the underlying hijacked connection
+// when ctx is done, so this timeout actually unblocks the read — it isn't
+// merely cosmetic.
 var execAgentsJSON = func(ctx context.Context, cli *client.Client, containerID string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	return ctr.ExecNonInteractive(ctx, cli, containerID, ctr.ContainerUser,
 		[]string{"claude", "agents", "--json", "--cwd", ctr.ContainerWorkspace})
 }

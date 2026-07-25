@@ -145,6 +145,18 @@ func execCore(ctx context.Context, cli *client.Client, containerID, user string,
 	}
 	defer attachResp.Close()
 
+	// ContainerExecAttach's hijacked connection is a raw net.Conn once
+	// established: ctx is only consulted for the initial handshake, so a
+	// blocked write/read below (stdin write, or stdcopy.StdCopy) will NOT be
+	// interrupted by ctx cancellation on its own. Close the connection when
+	// ctx is done so callers with a deadline (e.g. execAgentsJSON's 5s
+	// timeout) actually get unblocked instead of hanging on a wedged
+	// container. On the normal/success path "done" fires first and the
+	// watcher exits without touching the connection.
+	done := make(chan struct{})
+	defer close(done)
+	go closeOnCtxDone(ctx, done, attachResp.Close)
+
 	// If stdin data was provided, write it and close the write side so the
 	// command sees EOF.
 	if attachStdin {
@@ -196,6 +208,21 @@ func ChownRecursive(ctx context.Context, cli *client.Client, containerID, dir st
 	_, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
 		[]string{"chown", "-R", ContainerUserGroup, dir})
 	return err
+}
+
+// closeOnCtxDone waits for either ctx to be canceled/expired or done to be
+// closed, whichever happens first. If ctx wins, closeConn is invoked to
+// unblock a caller that's stuck in a blocking read/write on the associated
+// connection (a hijacked Docker exec connection does not itself observe ctx
+// once established — see execCore). If done wins (the normal path, where the
+// caller finished before ctx fired), closeConn is never called and the
+// connection is left to the caller's own cleanup (e.g. a deferred Close).
+func closeOnCtxDone(ctx context.Context, done <-chan struct{}, closeConn func()) {
+	select {
+	case <-ctx.Done():
+		closeConn()
+	case <-done:
+	}
 }
 
 // hasEnvKey returns true if any entry in env starts with key=.
