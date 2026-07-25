@@ -63,3 +63,22 @@ func TestPreprocess_NilEnv(t *testing.T) {
 		t.Errorf("nil env should use default: %v", m["x"])
 	}
 }
+
+func TestPreprocess_CommaInString(t *testing.T) {
+	got := preprocess([]byte(`{"a": "x,]", "b": ["**/*.{js,ts,}"], "c": [1, 2,]}`), nil)
+	var m map[string]interface{}
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, got)
+	}
+	if m["a"] != "x,]" {
+		t.Errorf("comma-in-string corrupted: %v", m["a"])
+	}
+	arr, _ := m["b"].([]interface{})
+	if len(arr) != 1 || arr[0] != "**/*.{js,ts,}" {
+		t.Errorf("glob-brace comma corrupted: %v", m["b"])
+	}
+	c, _ := m["c"].([]interface{})
+	if len(c) != 2 {
+		t.Errorf("real trailing comma not removed: %v", m["c"])
+	}
+}

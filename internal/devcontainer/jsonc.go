@@ -10,14 +10,10 @@ import (
 // string-literal-aware: // and /* inside a JSON string are preserved.
 func preprocess(data []byte, localEnv func(name string) (string, bool)) []byte {
 	stripped := stripComments(string(data))
-	stripped = trailingCommaRe.ReplaceAllString(stripped, "$1")
+	stripped = stripTrailingCommas(stripped)
 	stripped = substituteLocalEnv(stripped, localEnv)
 	return []byte(stripped)
 }
-
-// trailingCommaRe matches a comma followed by optional whitespace and a closing
-// brace/bracket. The captured group ($1) is the closer, so the comma is dropped.
-var trailingCommaRe = regexp.MustCompile(`,(\s*[}\]])`)
 
 // stripComments removes // line comments and /* */ block comments, while leaving
 // any such sequence that appears inside a JSON string literal untouched.
@@ -59,6 +55,47 @@ func stripComments(s string) string {
 		default:
 			b.WriteByte(c)
 		}
+	}
+	return b.String()
+}
+
+// stripTrailingCommas removes a comma that is immediately followed (after
+// optional whitespace) by a closing } or ]. It is string-literal-aware: a comma
+// inside a "..." string is never touched. Runs after stripComments, so the input
+// is already comment-free.
+func stripTrailingCommas(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			b.WriteByte(c)
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		if c == '"' {
+			inString = true
+			b.WriteByte(c)
+			continue
+		}
+		if c == ',' {
+			j := i + 1
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n' || s[j] == '\r') {
+				j++
+			}
+			if j < len(s) && (s[j] == '}' || s[j] == ']') {
+				continue // trailing comma: skip it (the following whitespace + bracket are written normally)
+			}
+		}
+		b.WriteByte(c)
 	}
 	return b.String()
 }
