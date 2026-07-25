@@ -131,6 +131,7 @@ type bunkerFlags struct {
 	rebuild   bool
 	force     bool
 	noSandbox bool
+	noColor   bool
 	remaining []string
 	err       error
 }
@@ -154,6 +155,7 @@ func extractBunkerFlags(args []string) bunkerFlags {
 		"--rebuild":    &f.rebuild,
 		"--force":      &f.force,
 		"--no-sandbox": &f.noSandbox,
+		"--no-color":   &f.noColor,
 	}
 
 	i := 0

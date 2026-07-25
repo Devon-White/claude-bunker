@@ -38,11 +38,12 @@ func init() {
 	completionCmd.DisableFlagParsing = false
 	sessionsCmd.DisableFlagParsing = false
 
-	// Add --verbose/--quiet flags to subcommands (root command handles
+	// Add --verbose/--quiet/--no-color flags to subcommands (root command handles
 	// these via extractBunkerFlags since its flag parsing is disabled).
 	for _, cmd := range []*cobra.Command{shellCmd, pruneCmd, statusCmd, initCmd, logsCmd, sessionsCmd} {
 		cmd.Flags().BoolP("verbose", "V", false, "Show detailed output")
 		cmd.Flags().BoolP("quiet", "q", false, "Suppress informational output")
+		cmd.Flags().Bool("no-color", false, "Disable ANSI color output")
 	}
 
 	initCmd.Flags().Bool("defaults", false, "Write a default config non-interactively (no prompts)")
@@ -77,6 +78,15 @@ var versionCmd = &cobra.Command{
 
 // Execute runs the root command.
 func Execute() error {
+	noColor := false
+	for _, a := range os.Args[1:] {
+		if a == "--no-color" {
+			noColor = true
+			break
+		}
+	}
+	applyColorProfile(noColor)
+
 	// Intercept help flags before cobra sees them (since flag parsing is disabled on root)
 	if len(os.Args) > 1 {
 		switch os.Args[1] {

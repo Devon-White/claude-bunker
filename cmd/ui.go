@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"golang.org/x/term"
 )
 
@@ -125,6 +126,39 @@ func stateStyle(state string) lipgloss.Style {
 // isTTY returns true when stdin is an interactive terminal.
 func isTTY() bool {
 	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// shouldUseColor decides whether to emit ANSI color, per the no-color.org and
+// CLICOLOR conventions. Precedence: NO_COLOR (any value) disables; else
+// CLICOLOR_FORCE (non-empty, != "0") forces on; else --no-color / CLICOLOR=0
+// disable; else color follows whether the diagnostic stream is a TTY.
+func shouldUseColor(noColorFlag bool, env func(string) (string, bool), stderrIsTTY bool) bool {
+	if _, ok := env("NO_COLOR"); ok {
+		return false
+	}
+	if v, ok := env("CLICOLOR_FORCE"); ok && v != "" && v != "0" {
+		return true
+	}
+	if noColorFlag {
+		return false
+	}
+	if v, ok := env("CLICOLOR"); ok && v == "0" {
+		return false
+	}
+	return stderrIsTTY
+}
+
+// isStderrTTY reports whether stderr (where diagnostics go) is an interactive terminal.
+func isStderrTTY() bool {
+	return term.IsTerminal(int(os.Stderr.Fd()))
+}
+
+// applyColorProfile sets lipgloss's color profile from the real environment.
+// Call once early in Execute, before any styled output.
+func applyColorProfile(noColorFlag bool) {
+	if !shouldUseColor(noColorFlag, os.LookupEnv, isStderrTTY()) {
+		lipgloss.SetColorProfile(termenv.Ascii)
+	}
 }
 
 // confirmAction shows a yes/no prompt. Returns false on abort, error, or "No".
