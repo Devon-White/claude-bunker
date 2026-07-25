@@ -34,9 +34,9 @@ func runSessionsAttach(cmd *cobra.Command, args []string) error {
 	initVerbosity(cmd)
 	ctx := context.Background()
 
-	cli, err := ctr.NewClient()
+	cli, err := dockerClient()
 	if err != nil {
-		return fmt.Errorf("docker client: %w", err)
+		return err
 	}
 	defer cli.Close()
 

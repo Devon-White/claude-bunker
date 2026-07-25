@@ -68,7 +68,9 @@ func warn(msg string) {
 	}
 }
 
-func die(msg string) {
+// dieCode prints a styled fatal error to stderr, tears down the active runner,
+// and exits with the given code.
+func dieCode(code int, msg string) {
 	fmt.Fprintln(errW,
 		prefixStyle.Render("[claude-bunker]"),
 		errorLabelStyle.Render("ERROR:"),
@@ -81,7 +83,12 @@ func die(msg string) {
 			activeRunner.cli.Close()
 		}
 	}
-	os.Exit(1)
+	os.Exit(code)
+}
+
+// die is dieCode with the generic error exit code.
+func die(msg string) {
+	dieCode(ExitError, msg)
 }
 
 func success(msg string) {

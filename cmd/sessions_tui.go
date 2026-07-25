@@ -29,9 +29,9 @@ func runSessionsTUI(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cli, err := ctr.NewClient()
+	cli, err := dockerClient()
 	if err != nil {
-		return fmt.Errorf("docker client: %w", err)
+		return err
 	}
 	defer cli.Close()
 

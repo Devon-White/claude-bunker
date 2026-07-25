@@ -10,7 +10,6 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/spf13/cobra"
 
-	ctr "github.com/Devon-White/claude-bunker/internal/container"
 	"github.com/Devon-White/claude-bunker/internal/sessions"
 )
 
@@ -31,9 +30,9 @@ func runSessionsLogs(cmd *cobra.Command, args []string) error {
 	initVerbosity(cmd)
 	ctx := context.Background()
 
-	cli, err := ctr.NewClient()
+	cli, err := dockerClient()
 	if err != nil {
-		return fmt.Errorf("docker client: %w", err)
+		return err
 	}
 	defer cli.Close()
 

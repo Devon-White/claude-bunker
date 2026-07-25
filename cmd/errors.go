@@ -6,8 +6,20 @@ import (
 	"io"
 )
 
-// Process exit codes. Phase 0 defines the ones it needs; later phases extend
-// this into the full exit-code catalog.
+// Process exit codes. This is the exit-code catalog for claude-bunker:
+//
+//	0 (ExitOK)                success.
+//	1 (ExitError)              generic/unclassified failure — the fallback
+//	                           for any error that isn't a *CodedError.
+//	2 (ExitCancelled)          the user cancelled an interactive prompt or
+//	                           the operation was aborted (e.g. non-interactive
+//	                           confirmation refusal).
+//	4 (ExitDockerUnavailable)  the Docker client could not be constructed or
+//	                           reach the daemon (see dockerClient in docker.go).
+//
+// Note: exit code 3 is intentionally unused here — the default `run` path
+// (see cmd/run.go) execs `claude` in the container and propagates *its* exit
+// code verbatim via os.Exit, rather than mapping it into this catalog.
 const (
 	ExitOK                = 0
 	ExitError             = 1

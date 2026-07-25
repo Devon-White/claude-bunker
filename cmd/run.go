@@ -231,9 +231,9 @@ func runInSandbox(passedArgs []string, execCmd string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cli, err := container.NewClient()
+	cli, err := dockerClient()
 	if err != nil {
-		die(err.Error())
+		dieCode(ExitDockerUnavailable, err.Error())
 	}
 
 	r := &runner{
