@@ -13,10 +13,11 @@ import (
 
 // BuildInput bundles the four values that flow through every fingerprint function.
 type BuildInput struct {
-	Version    string
-	Dockerfile string
-	Scripts    map[string][]byte
-	ProjectCfg ProjectConfig
+	Version        string
+	Dockerfile     string
+	Scripts        map[string][]byte
+	ProjectCfg     ProjectConfig
+	FeatureDigests map[string]string // feature ref → resolved sha256 digest (from the committed lock)
 }
 
 // imageFingerprint computes a SHA-256 hash of all inputs that affect the Docker
@@ -66,6 +67,20 @@ func imageFingerprint(b BuildInput) string {
 			for _, k := range optKeys {
 				h.Write([]byte(fmt.Sprintf("%s=%v,", k, opts[k])))
 			}
+		}
+	}
+
+	// Hash resolved feature digests from the committed lockfile so an upstream
+	// feature change under the same tag invalidates the image cache.
+	if len(b.FeatureDigests) > 0 {
+		h.Write([]byte("featuredigests:"))
+		refs := make([]string, 0, len(b.FeatureDigests))
+		for ref := range b.FeatureDigests {
+			refs = append(refs, ref)
+		}
+		sort.Strings(refs)
+		for _, ref := range refs {
+			h.Write([]byte(ref + "@" + b.FeatureDigests[ref] + ","))
 		}
 	}
 

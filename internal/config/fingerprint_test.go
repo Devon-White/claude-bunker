@@ -376,6 +376,29 @@ func TestPluginLevel(t *testing.T) {
 	}
 }
 
+func TestImageFingerprint_DigestChangeInvalidates(t *testing.T) {
+	base := BuildInput{
+		Version:    "1.0.0",
+		Dockerfile: "FROM x",
+		ProjectCfg: ProjectConfig{
+			Features: map[string]map[string]interface{}{
+				"ghcr.io/devcontainers/features/node:1": {"version": "20"},
+			},
+		},
+		FeatureDigests: map[string]string{"ghcr.io/devcontainers/features/node:1": "sha256:aaa"},
+	}
+	changed := base
+	changed.FeatureDigests = map[string]string{"ghcr.io/devcontainers/features/node:1": "sha256:bbb"}
+
+	if imageFingerprint(base) == imageFingerprint(changed) {
+		t.Error("a feature digest change must change the image fingerprint")
+	}
+	// Same digests → same fingerprint (determinism).
+	if imageFingerprint(base) != imageFingerprint(base) {
+		t.Error("fingerprint must be deterministic")
+	}
+}
+
 // Ensure HOME env var is set for test (needed for cacheDir)
 func init() {
 	if os.Getenv("HOME") == "" {

@@ -351,11 +351,18 @@ func (r *runner) resolveContainer() {
 		scriptMap[f.Name] = f.Content
 	}
 	r.cachedDockerfile = container.GenerateBaseDockerfile()
+	featureDigests := map[string]string{}
+	if lock, err := container.LoadLockFile(r.workspace); err == nil {
+		for ref, f := range lock.Features {
+			featureDigests[ref] = f.Integrity
+		}
+	}
 	r.buildInput = config.BuildInput{
-		Version:    Version,
-		Dockerfile: r.cachedDockerfile,
-		Scripts:    scriptMap,
-		ProjectCfg: r.projectCfg,
+		Version:        Version,
+		Dockerfile:     r.cachedDockerfile,
+		Scripts:        scriptMap,
+		ProjectCfg:     r.projectCfg,
+		FeatureDigests: featureDigests,
 	}
 
 	r.fpResult = config.CompareFingerprints(r.buildInput, r.containerName)
