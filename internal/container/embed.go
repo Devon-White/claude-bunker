@@ -26,16 +26,10 @@ var (
 	initFirewallScript    = mustReadEmbedded("init-firewall.sh")
 	refreshFirewallScript = mustReadEmbedded("refresh-firewall.sh")
 	tmuxConf              = mustReadEmbedded("tmux.conf")
-	bunkerHookScript      = mustReadEmbedded("bunker-hook.sh")
 )
 
 // copyScript returns a mutable copy of a cached script.
 func copyScript(src []byte) []byte { return append([]byte(nil), src...) }
-
-// BunkerHookScriptContent returns a copy of the embedded bunker-hook.sh script.
-// Used by EnsureHooksConfigured to inject the script into stale containers
-// that were built before the hooks feature was added.
-func BunkerHookScriptContent() []byte { return copyScript(bunkerHookScript) }
 
 // BuildContextFile describes an embedded file that is part of the Docker build
 // context. This is the single source of truth — buildContextTar, dumpDockerfile,
@@ -55,7 +49,6 @@ func BuildContextScripts() []BuildContextFile {
 		{"init-firewall.sh", copyScript(initFirewallScript), 0755},
 		{"refresh-firewall.sh", copyScript(refreshFirewallScript), 0755},
 		{"tmux.conf", copyScript(tmuxConf), 0644},
-		{"bunker-hook.sh", copyScript(bunkerHookScript), 0755},
 	}
 }
 

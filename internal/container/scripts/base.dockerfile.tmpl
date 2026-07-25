@@ -63,7 +63,6 @@ USER root
 COPY firewall-common.sh {{.CommonFirewallPath}}
 COPY init-firewall.sh {{.FirewallPath}}
 COPY refresh-firewall.sh {{.RefreshFirewallPath}}
-COPY bunker-hook.sh {{.BunkerHookScriptPath}}
 COPY tmux.conf {{.Home}}/.tmux.conf
-RUN chmod +x {{.CommonFirewallPath}} {{.FirewallPath}} {{.RefreshFirewallPath}} {{.BunkerHookScriptPath}} && \
+RUN chmod +x {{.CommonFirewallPath}} {{.FirewallPath}} {{.RefreshFirewallPath}} && \
   chown {{.User}}:{{.User}} {{.Home}}/.tmux.conf

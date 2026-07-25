@@ -13,7 +13,6 @@ import (
 	"github.com/docker/docker/client"
 
 	"github.com/Devon-White/claude-bunker/internal/container"
-	"github.com/Devon-White/claude-bunker/internal/sessions"
 )
 
 const (
@@ -129,34 +128,6 @@ func writeManagedSettings(ctx context.Context, cli *client.Client, opts SeedOpts
 		settings["enableAllProjectMcpServers"] = true
 	}
 
-	// Inject Claude Code hooks that signal the host watcher via Unix socket.
-	// These hooks fire on session lifecycle events (start/stop, subagent spawn/die)
-	// and replace the previous 3-second polling approach with event-driven updates.
-	// The hook script reads event data and sends it to /workspace/.bunker.sock.
-	// Hook format: each event → array of matcher groups → each with inner hooks array.
-	// See https://code.claude.com/docs/hooks for the schema.
-	hookGroup := func(async bool) []any {
-		handler := map[string]any{
-			"type":    "command",
-			"command": container.BunkerHookScriptPath,
-		}
-		if async {
-			handler["async"] = true
-		}
-		return []any{
-			map[string]any{
-				"hooks": []any{handler},
-			},
-		}
-	}
-	settings["hooks"] = map[string]any{
-		sessions.HookStop:          hookGroup(true),
-		sessions.HookSessionStart:  hookGroup(false),
-		sessions.HookSessionEnd:    hookGroup(false),
-		sessions.HookSubagentStart: hookGroup(true),
-		sessions.HookSubagentStop:  hookGroup(true),
-	}
-
 	data, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling: %w", err)
@@ -174,25 +145,6 @@ func writeManagedSettings(ctx context.Context, cli *client.Client, opts SeedOpts
 
 	fmt.Fprintf(opts.LogW, "[claude-bunker] Wrote managed-settings.json with %d allowed domains\n", len(domains))
 	return nil
-}
-
-// EnsureHooksConfigured copies the bunker-hook.sh script and re-writes
-// managed-settings.json with hooks config into a container. This handles
-// stale containers built before the hooks feature was added — their image
-// won't have the script, and their managed-settings won't have hooks.
-//
-// Called when starting a stopped container from the TUI to ensure hooks
-// work regardless of when the container's image was built.
-func EnsureHooksConfigured(ctx context.Context, cli *client.Client, containerID string, opts SeedOpts) error {
-	// Copy the embedded hook script into the container.
-	hookScript := container.BunkerHookScriptContent()
-	if err := container.CopyContentToContainerWithMode(ctx, cli, containerID,
-		hookScript, container.BunkerHookScriptPath, "755"); err != nil {
-		return fmt.Errorf("copying bunker-hook.sh: %w", err)
-	}
-
-	// Re-write managed-settings.json with hooks.
-	return writeManagedSettings(ctx, cli, opts)
 }
 
 // SeedSessionHistory copies session history from the host's ~/.claude/projects/

@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -15,7 +14,6 @@ import (
 	"github.com/spf13/cobra"
 
 	ctr "github.com/Devon-White/claude-bunker/internal/container"
-	"github.com/Devon-White/claude-bunker/internal/sandbox"
 	"github.com/Devon-White/claude-bunker/internal/sessions"
 )
 
@@ -472,10 +470,8 @@ func attachAndCleanup(cli *client.Client, containerID string, claudeCmd []string
 	return nil
 }
 
-// reinjectOnStart re-injects auth secrets and ensures hooks are configured
-// after starting a stopped container. Secrets live on tmpfs which is lost
-// when the container stops. Hooks may be missing from stale containers
-// built before the hooks feature was added.
+// reinjectOnStart re-injects auth secrets after starting a stopped container.
+// Secrets live on tmpfs which is lost when the container stops.
 func reinjectOnStart(ctx context.Context, cli *client.Client, containerID string) {
 	// Re-inject auth from environment (same precedence as cmd/run.go).
 	auth := ctr.AuthTokens{
@@ -486,15 +482,6 @@ func reinjectOnStart(ctx context.Context, cli *client.Client, containerID string
 	if auth.HasSecrets() {
 		_ = ctr.InjectAuthSecrets(ctx, cli, containerID, auth)
 	}
-
-	// Ensure hooks and managed-settings are present (handles stale containers).
-	workspace := resolveWorkspace()
-	opts := sandbox.SeedOpts{
-		ContainerID: containerID,
-		Workspace:   workspace,
-		LogW:        io.Discard,
-	}
-	_ = sandbox.EnsureHooksConfigured(ctx, cli, containerID, opts)
 }
 
 // handleConfirm processes y/n input during a confirmation prompt.

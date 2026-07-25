@@ -5,16 +5,6 @@ import (
 	"time"
 )
 
-// Hook event names used in managed-settings.json and matched by the TUI.
-// These must match Claude Code's hook event schema exactly.
-const (
-	HookStop          = "Stop"
-	HookSessionStart  = "SessionStart"
-	HookSessionEnd    = "SessionEnd"
-	HookSubagentStart = "SubagentStart"
-	HookSubagentStop  = "SubagentStop"
-)
-
 // ContainerState represents the state of a single claude-bunker container.
 // Each container maps to one workspace/project directory.
 type ContainerState struct {
