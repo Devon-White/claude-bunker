@@ -1,6 +1,7 @@
 package devcontainer
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,7 +32,7 @@ func stripBunkerFeatures(features map[string]map[string]interface{}) map[string]
 	for ref, opts := range features {
 		managed := false
 		for _, p := range bunkerManagedFeaturePrefixes {
-			if strings.HasPrefix(ref, p) {
+			if ref == p || strings.HasPrefix(ref, p+":") || strings.HasPrefix(ref, p+"@") {
 				managed = true
 				break
 			}
@@ -45,24 +46,22 @@ func stripBunkerFeatures(features map[string]map[string]interface{}) map[string]
 
 // LoadProjectConfig reads <workspace>/.devcontainer/devcontainer.json and maps
 // it to the engine's ProjectConfig. Returns (zeroConfig, false, nil) when the
-// file is absent. For a user-authored file (no GENERATED marker) it still forces
-// bunker's security fields; either way it strips bunker-managed features (which
-// bunker provides natively) from the engine config.
+// file is absent. The returned config maps the file's fields and strips bunker-managed
+// features (which bunker provides natively). Bunker's capAdd/remoteUser enforcement
+// happens at container creation time in internal/container, not here.
 func LoadProjectConfig(workspace string) (config.ProjectConfig, bool, error) {
-	data, err := os.ReadFile(DevContainerPath(workspace))
+	path := DevContainerPath(workspace)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return config.ProjectConfig{}, false, nil
 		}
 		return config.ProjectConfig{}, false, err
 	}
 
-	dc, err := Parse(data, func(name string) (string, bool) { return os.LookupEnv(name) })
+	dc, err := Parse(data, os.LookupEnv)
 	if err != nil {
-		return config.ProjectConfig{}, true, fmt.Errorf("reading %s: %w", DevContainerPath(workspace), err)
-	}
-	if !IsBunkerGenerated(data) {
-		dc = Merge(dc) // user-authored: force security fields into the in-memory spec
+		return config.ProjectConfig{}, true, fmt.Errorf("reading %s: %w", path, err)
 	}
 
 	cfg := ToProjectConfig(dc)

@@ -24,6 +24,20 @@ func TestStripBunkerFeatures(t *testing.T) {
 	}
 }
 
+func TestStripBunkerFeatures_PrefixBoundary(t *testing.T) {
+	in := map[string]map[string]interface{}{
+		"ghcr.io/anthropics/devcontainer-features/claude-code:1":     {}, // bunker-managed → stripped
+		"ghcr.io/anthropics/devcontainer-features/claude-code-cli:1": {}, // DISTINCT sibling → kept
+	}
+	got := stripBunkerFeatures(in)
+	if _, ok := got["ghcr.io/anthropics/devcontainer-features/claude-code:1"]; ok {
+		t.Error("exact bunker feature must be stripped")
+	}
+	if _, ok := got["ghcr.io/anthropics/devcontainer-features/claude-code-cli:1"]; !ok {
+		t.Error("a distinct sibling feature sharing the prefix must NOT be stripped")
+	}
+}
+
 func TestLoadProjectConfig(t *testing.T) {
 	// Absent file → not found, no error.
 	ws := t.TempDir()
