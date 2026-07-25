@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	bunkerlog "github.com/Devon-White/claude-bunker/internal/log"
 	"github.com/Devon-White/claude-bunker/internal/config"
+	bunkerlog "github.com/Devon-White/claude-bunker/internal/log"
 )
 
 // GeneratedMarker is the first line of a bunker-generated devcontainer.json.
