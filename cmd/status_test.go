@@ -28,3 +28,12 @@ func TestStatusInfoJSON(t *testing.T) {
 		t.Errorf("state = %v", back["state"])
 	}
 }
+
+func TestStatusShowsConfig(t *testing.T) {
+	if statusShowsConfig("not created") {
+		t.Error("config section must NOT show for the not-created state")
+	}
+	if !statusShowsConfig("running") {
+		t.Error("config section must show for a running container")
+	}
+}

@@ -134,6 +134,13 @@ func renderStatusText(s statusInfo) {
 	}
 }
 
+// statusShowsConfig reports whether the text status output includes the
+// resolved-config section. Matches the pre-refactor behavior: shown only when a
+// container exists (not for the "not created" state).
+func statusShowsConfig(state string) bool {
+	return state != "not created"
+}
+
 func runStatus(cmd *cobra.Command, args []string) error {
 	initVerbosity(cmd)
 	ctx := context.Background()
@@ -158,8 +165,10 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	renderStatusText(s)
 
 	// The resolved-config section stays text-only (not in the JSON struct for now).
-	if cfg, _, cfgErr := devcontainer.LoadProjectConfig(resolveWorkspace()); cfgErr == nil {
-		printResolvedConfig(cfg)
+	if statusShowsConfig(s.State) {
+		if cfg, _, cfgErr := devcontainer.LoadProjectConfig(resolveWorkspace()); cfgErr == nil {
+			printResolvedConfig(cfg)
+		}
 	}
 
 	return nil

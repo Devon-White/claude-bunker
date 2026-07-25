@@ -117,7 +117,12 @@ func Execute() error {
 				fmt.Println(renderVersion(Version))
 				os.Exit(0)
 			}
-			// --json present: fall through to cobra so the flag is parsed.
+			if os.Args[1] != "version" {
+				// --version / -v are not cobra subcommands; handle --json here.
+				fmt.Println(renderVersionJSON(Version))
+				os.Exit(0)
+			}
+			// `version --json`: fall through to cobra so the flag is parsed.
 		case "--dump-dockerfile":
 			if err := dumpDockerfile(); err != nil {
 				fmt.Fprintln(os.Stderr, err)
