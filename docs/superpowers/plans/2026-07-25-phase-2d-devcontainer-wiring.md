@@ -342,9 +342,22 @@ git commit -m "feat(devcontainer): LoadProjectConfig reads devcontainer.json; st
 
 **Context:** These three sites call `config.LoadProjectConfig` (reads config.json). Switch them to `devcontainer.LoadProjectConfig` (reads devcontainer.json). Preserve the Phase 0 fail-closed handling in `run.go`.
 
+**IMPORTANT — env-var expansion.** The old `config.LoadProjectConfig` ran `expandProjectConfig` internally, so `${GH_TOKEN}`-style values (ghToken, allowDomains, env, commands) resolved to real values at runtime. `devcontainer.LoadProjectConfig` returns the RAW mapped config (unexpanded) — which is correct for init's read-then-regenerate (we must keep `"${GH_TOKEN}"` a reference so `Generate` doesn't drop it as a literal). So expansion moves to the RUNTIME site: `run.go`'s `loadConfig` expands after loading. `status.go` and init pre-populate use the raw config (no expansion). This requires exporting the expander.
+
+- [ ] **Step 0: Export the config expander (internal/config/expand.go)**
+
+Add an exported wrapper (do not rename the existing unexported one, to avoid churn):
+
+```go
+// ExpandProjectConfig expands $VAR / ${VAR} / ${VAR:-default} references in a
+// ProjectConfig's string fields (ghToken, allowDomains, env, commands). Used by
+// the runtime read path after loading .devcontainer/devcontainer.json.
+func ExpandProjectConfig(cfg *ProjectConfig) { expandProjectConfig(cfg) }
+```
+
 - [ ] **Step 1: Update `runner.loadConfig` (cmd/run.go)**
 
-Add `"github.com/Devon-White/claude-bunker/internal/devcontainer"` to the imports. Replace the first two lines of `loadConfig`:
+Add `"github.com/Devon-White/claude-bunker/internal/devcontainer"` to the imports. Replace the first lines of `loadConfig`:
 
 ```go
 func (r *runner) loadConfig(flags bunkerFlags) {
@@ -355,9 +368,13 @@ func (r *runner) loadConfig(flags bunkerFlags) {
 	if err != nil {
 		warn("Continuing despite devcontainer.json error (--force): " + err.Error())
 	}
+	// Expand ${VAR} references for runtime use (auth token, firewall domains, env).
+	config.ExpandProjectConfig(&cfg)
 	r.projectCfg = cfg
 	// ... rest unchanged (auth resolution, proxy detect)
 ```
+
+(Keep the `config` import in run.go — it's still used for `config.BuildInput`, `config.ContainerName`, etc.)
 
 - [ ] **Step 2: Update status.go**
 
