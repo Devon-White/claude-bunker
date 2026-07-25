@@ -27,17 +27,17 @@ type ResolvedFeature struct {
 	ID            string                 // feature identifier (e.g. "python")
 	Source        string                 // full OCI reference
 	InstallDir    string                 // temp dir containing install.sh
-	Options       map[string]interface{} // user-specified options
+	Options       map[string]interface{} // effective options: feature defaults merged under user-specified values
 	Env           map[string]string      // feature's containerEnv from metadata
 	InstallsAfter []string               // OCI refs this feature should install after
 }
 
 // featureMetadata is the subset of devcontainer-feature.json we care about.
 type featureMetadata struct {
-	ID               string                    `json:"id"`
-	RawInstallsAfter []json.RawMessage         `json:"installsAfter"`
-	ContainerEnv     map[string]string         `json:"containerEnv"`
-	Options          map[string]featureOption  `json:"options"`
+	ID               string                   `json:"id"`
+	RawInstallsAfter []json.RawMessage        `json:"installsAfter"`
+	ContainerEnv     map[string]string        `json:"containerEnv"`
+	Options          map[string]featureOption `json:"options"`
 }
 
 // featureOption is the subset of a devcontainer-feature.json option we use.
@@ -273,9 +273,11 @@ type featureHeap struct {
 	features []ResolvedFeature
 }
 
-func (h featureHeap) Len() int           { return len(h.indices) }
-func (h featureHeap) Less(i, j int) bool { return h.features[h.indices[i]].ID < h.features[h.indices[j]].ID }
-func (h featureHeap) Swap(i, j int)      { h.indices[i], h.indices[j] = h.indices[j], h.indices[i] }
+func (h featureHeap) Len() int { return len(h.indices) }
+func (h featureHeap) Less(i, j int) bool {
+	return h.features[h.indices[i]].ID < h.features[h.indices[j]].ID
+}
+func (h featureHeap) Swap(i, j int) { h.indices[i], h.indices[j] = h.indices[j], h.indices[i] }
 
 func (h *featureHeap) Push(x any) {
 	h.indices = append(h.indices, x.(int))

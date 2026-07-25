@@ -233,12 +233,11 @@ func TestWriteFeatureFiles_EmptyOptions(t *testing.T) {
 	}
 }
 
-
 func TestMergeOptionDefaults(t *testing.T) {
 	meta := featureMetadata{
 		ID: "node",
 		Options: map[string]featureOption{
-			"version": {Default: "lts"},
+			"version":    {Default: "lts"},
 			"nvmVersion": {Default: "latest"},
 		},
 	}
