@@ -352,6 +352,61 @@ func TestClaudeSessionsFromAgents(t *testing.T) {
 	}
 }
 
+func TestClaudeSessions_TitleFallback(t *testing.T) {
+	orig := execAgentsJSON
+	defer func() { execAgentsJSON = orig }()
+	execAgentsJSON = func(_ context.Context, _ *client.Client, _ string) (string, error) {
+		return `[
+		  {"pid":10,"cwd":"/workspace","kind":"interactive","sessionId":"sid-empty","name":"","status":"idle"},
+		  {"pid":20,"cwd":"/workspace","kind":"interactive","sessionId":"sid-named","name":"live-name","status":"idle"}
+		]`, nil
+	}
+
+	// Seed titles in the store
+	const containerID = "cid"
+	if err := SetSessionTitle(containerID, "sid-empty", "stored-title"); err != nil {
+		t.Fatalf("SetSessionTitle failed: %v", err)
+	}
+	if err := SetSessionTitle(containerID, "sid-named", "stored-other"); err != nil {
+		t.Fatalf("SetSessionTitle failed: %v", err)
+	}
+
+	mgr := NewManager(&mockClient{})
+	got := mgr.claudeSessions(context.Background(), containerID)
+
+	if len(got) != 2 {
+		t.Fatalf("want 2 interactive claude sessions, got %d: %+v", len(got), got)
+	}
+
+	// Find the sessions by SessionID
+	var emptySession, namedSession *SessionInfo
+	for i := range got {
+		switch got[i].SessionID {
+		case "sid-empty":
+			emptySession = &got[i]
+		case "sid-named":
+			namedSession = &got[i]
+		}
+	}
+
+	if emptySession == nil {
+		t.Fatal("session with sid-empty not found")
+	}
+	if namedSession == nil {
+		t.Fatal("session with sid-named not found")
+	}
+
+	// Test 1: Fallback case - empty name should use stored title
+	if emptySession.Title != "stored-title" {
+		t.Errorf("empty name session: want Title='stored-title', got %q", emptySession.Title)
+	}
+
+	// Test 2: Claude name wins - non-empty name should override stored title
+	if namedSession.Title != "live-name" {
+		t.Errorf("named session: want Title='live-name', got %q", namedSession.Title)
+	}
+}
+
 func TestFormatUptime(t *testing.T) {
 	tests := []struct {
 		name    string
