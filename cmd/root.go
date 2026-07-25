@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -47,6 +48,8 @@ func init() {
 	}
 
 	initCmd.Flags().Bool("defaults", false, "Write a default config non-interactively (no prompts)")
+	versionCmd.Flags().Bool("json", false, "Output as JSON")
+	statusCmd.Flags().Bool("json", false, "Output as JSON")
 
 	rootCmd.AddCommand(shellCmd)
 	rootCmd.AddCommand(pruneCmd)
@@ -72,8 +75,17 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the version",
 	Run: func(cmd *cobra.Command, args []string) {
+		if j, _ := cmd.Flags().GetBool("json"); j {
+			fmt.Println(renderVersionJSON(Version))
+			return
+		}
 		fmt.Println(renderVersion(Version))
 	},
+}
+
+// renderVersionJSON renders the version as a minimal JSON object.
+func renderVersionJSON(version string) string {
+	return `{"version":` + strconv.Quote(version) + `}`
 }
 
 // Execute runs the root command.
@@ -94,8 +106,18 @@ func Execute() error {
 			rootCmd.DisableFlagParsing = false
 			rootCmd.SetArgs([]string{"--help"})
 		case "version", "--version", "-v":
-			fmt.Println(renderVersion(Version))
-			os.Exit(0)
+			hasJSON := false
+			for _, a := range os.Args[2:] {
+				if a == "--json" {
+					hasJSON = true
+					break
+				}
+			}
+			if !hasJSON {
+				fmt.Println(renderVersion(Version))
+				os.Exit(0)
+			}
+			// --json present: fall through to cobra so the flag is parsed.
 		case "--dump-dockerfile":
 			if err := dumpDockerfile(); err != nil {
 				fmt.Fprintln(os.Stderr, err)

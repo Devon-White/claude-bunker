@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
 
 	"github.com/Devon-White/claude-bunker/internal/config"
@@ -22,6 +25,115 @@ var statusCmd = &cobra.Command{
 	RunE:  runStatus,
 }
 
+// statusInfo is the machine-readable representation of `status`'s output.
+type statusInfo struct {
+	Workspace  string   `json:"workspace"`
+	Container  string   `json:"container"`
+	Image      string   `json:"image"`
+	State      string   `json:"state"`
+	ID         string   `json:"id,omitempty"`
+	Uptime     string   `json:"uptime,omitempty"`
+	Sessions   []string `json:"sessions,omitempty"`
+	ImageBuilt string   `json:"image_built,omitempty"`
+}
+
+// gatherStatus collects the current sandbox state into a statusInfo struct
+// without printing anything, so callers can render it as text or JSON.
+func gatherStatus(ctx context.Context, cli *client.Client, workspace string) (statusInfo, error) {
+	containerName := config.ContainerName(workspace)
+	imageTag := config.ImageTag(containerName)
+
+	s := statusInfo{
+		Workspace: workspace,
+		Container: containerName,
+		Image:     imageTag,
+	}
+
+	// Find container (running or stopped)
+	id, err := ctr.FindByLabel(ctx, cli, containerName)
+	if err != nil {
+		return s, fmt.Errorf("failed to query containers: %w", err)
+	}
+	if id == "" {
+		s.State = "not created"
+		return s, nil
+	}
+
+	inspect, err := cli.ContainerInspect(ctx, id)
+	if err != nil {
+		return s, fmt.Errorf("failed to inspect container: %w", err)
+	}
+	s.State = inspect.State.Status
+	idShort := id
+	if len(idShort) > 12 {
+		idShort = idShort[:12]
+	}
+	s.ID = idShort
+
+	if s.State == "running" {
+		// Show uptime
+		if inspect.State != nil && inspect.State.StartedAt != "" {
+			started, err := time.Parse(time.RFC3339Nano, inspect.State.StartedAt)
+			if err == nil {
+				s.Uptime = sessions.FormatUptime(started)
+			}
+		}
+
+		// Check for active sessions
+		mgr := sessions.NewManager(cli)
+		tree, _ := mgr.GetProcessTree(ctx, id)
+		if len(tree) > 0 {
+			names := make([]string, len(tree))
+			for i, sess := range tree {
+				names[i] = sess.Command
+			}
+			s.Sessions = names
+		}
+	}
+
+	// Image info
+	imgInspect, _, err := cli.ImageInspectWithRaw(ctx, imageTag)
+	if err == nil {
+		created, err := time.Parse(time.RFC3339Nano, imgInspect.Created)
+		if err == nil {
+			s.ImageBuilt = created.Local().Format("2006-01-02 15:04:05")
+		}
+	}
+
+	return s, nil
+}
+
+// renderStatusText prints the human-readable status output (the pre-refactor
+// behavior of runStatus, byte-identical).
+func renderStatusText(s statusInfo) {
+	fmt.Println(kvLine("Workspace:", s.Workspace))
+	fmt.Println(kvLine("Container:", s.Container))
+	fmt.Println(kvLine("Image:", s.Image))
+
+	if s.State == "not created" {
+		fmt.Println(kvLineStyled("State:", "not created", stateStyle("not created")))
+		return
+	}
+
+	fmt.Println(kvLineStyled("State:", s.State, stateStyle(s.State)))
+	fmt.Println(kvLine("ID:", s.ID))
+
+	if s.State == "running" {
+		if s.Uptime != "" {
+			fmt.Println(kvLine("Uptime:", s.Uptime))
+		}
+		if len(s.Sessions) > 0 {
+			fmt.Println(kvLine("Sessions:", strings.Join(s.Sessions, ", ")))
+		} else {
+			fmt.Println(kvLine("Sessions:", "none"))
+		}
+	}
+
+	if s.ImageBuilt != "" {
+		fmt.Println(kvLine("Image built:", s.ImageBuilt))
+	}
+}
+
 func runStatus(cmd *cobra.Command, args []string) error {
 	initVerbosity(cmd)
 	ctx := context.Background()
@@ -32,72 +144,21 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 	defer cli.Close()
 
-	workspace := resolveWorkspace()
-
-	containerName := config.ContainerName(workspace)
-	imageTag := config.ImageTag(containerName)
-
-	fmt.Println(kvLine("Workspace:", workspace))
-	fmt.Println(kvLine("Container:", containerName))
-	fmt.Println(kvLine("Image:", imageTag))
-
-	// Find container (running or stopped)
-	id, err := ctr.FindByLabel(ctx, cli, containerName)
+	s, err := gatherStatus(ctx, cli, resolveWorkspace())
 	if err != nil {
-		return fmt.Errorf("failed to query containers: %w", err)
-	}
-	if id == "" {
-		fmt.Println(kvLineStyled("State:", "not created", stateStyle("not created")))
-		return nil
+		return err
 	}
 
-	inspect, err := cli.ContainerInspect(ctx, id)
-	if err != nil {
-		return fmt.Errorf("failed to inspect container: %w", err)
-	}
-	state := inspect.State.Status
-	fmt.Println(kvLineStyled("State:", state, stateStyle(state)))
-	idShort := id
-	if len(idShort) > 12 {
-		idShort = idShort[:12]
-	}
-	fmt.Println(kvLine("ID:", idShort))
-
-	if state == "running" {
-		// Show uptime
-		if inspect.State != nil && inspect.State.StartedAt != "" {
-			started, err := time.Parse(time.RFC3339Nano, inspect.State.StartedAt)
-			if err == nil {
-				fmt.Println(kvLine("Uptime:", sessions.FormatUptime(started)))
-			}
-		}
-
-		// Check for active sessions
-		mgr := sessions.NewManager(cli)
-		tree, _ := mgr.GetProcessTree(ctx, id)
-		if len(tree) > 0 {
-			names := make([]string, len(tree))
-			for i, s := range tree {
-				names[i] = s.Command
-			}
-			fmt.Println(kvLine("Sessions:", strings.Join(names, ", ")))
-		} else {
-			fmt.Println(kvLine("Sessions:", "none"))
-		}
+	if j, _ := cmd.Flags().GetBool("json"); j {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(s)
 	}
 
-	// Image info
-	imgInspect, _, err := cli.ImageInspectWithRaw(ctx, imageTag)
-	if err == nil {
-		created, err := time.Parse(time.RFC3339Nano, imgInspect.Created)
-		if err == nil {
-			fmt.Println(kvLine("Image built:", created.Local().Format("2006-01-02 15:04:05")))
-		}
-	}
+	renderStatusText(s)
 
-	// Resolved project config
-	cfg, _, cfgErr := devcontainer.LoadProjectConfig(workspace)
-	if cfgErr == nil {
+	// The resolved-config section stays text-only (not in the JSON struct for now).
+	if cfg, _, cfgErr := devcontainer.LoadProjectConfig(resolveWorkspace()); cfgErr == nil {
 		printResolvedConfig(cfg)
 	}
 
@@ -147,5 +208,3 @@ func printResolvedConfig(cfg config.ProjectConfig) {
 		fmt.Println(configLine("exclude:", strings.Join(cfg.Exclude, ", ")))
 	}
 }
-
-
