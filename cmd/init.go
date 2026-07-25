@@ -45,7 +45,7 @@ func abortErr(err error) error {
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize or update a project config",
-	Long: `Creates or updates .claude/.claude-bunker/config.json.
+	Long: `Creates or updates .devcontainer/devcontainer.json.
 
 Run this in your project root to customize the sandbox behavior.
 If a config already exists, the wizard pre-selects your current settings
@@ -83,7 +83,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		if write {
-			return writeConfig(cfgPath, nil)
+			return writeDevContainer(workspace, config.ProjectConfig{})
 		}
 		return nil
 	}
@@ -148,7 +148,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 	cfg := buildConfig(selections)
 	mergeSettings(cfg, settings)
 
-	return writeConfig(cfgPath, cfg)
+	pc, err := mapToProjectConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("building config: %w", err)
+	}
+	return writeDevContainer(workspace, pc)
 }
 
 // preselectedLanguages returns the preset indices that match features in the existing config.
@@ -539,24 +543,42 @@ func mergeSettings(cfg map[string]interface{}, s initSettings) {
 	}
 }
 
-// writeConfig writes config to disk. If cfg is nil, writes "{}".
-func writeConfig(path string, cfg map[string]interface{}) error {
-	var data []byte
-	if len(cfg) == 0 {
-		data = []byte("{}\n")
-	} else {
-		var err error
-		data, err = json.MarshalIndent(cfg, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshaling config: %w", err)
-		}
-		data = append(data, '\n')
+// writeDevContainer generates .devcontainer/devcontainer.json from the wizard's
+// config and writes it. The generated file references the claude-code feature
+// and a portable base image for the VS Code path; bunker's own build ignores
+// the image and strips the feature (it installs Claude Code natively).
+func writeDevContainer(workspace string, cfg config.ProjectConfig) error {
+	name := filepath.Base(workspace) + " (bunkered)"
+	data, err := devcontainer.Generate(cfg, devcontainer.GenerateOpts{
+		Name:              name,
+		Image:             "mcr.microsoft.com/devcontainers/base:debian",
+		ClaudeCodeFeature: "ghcr.io/anthropics/devcontainer-features/claude-code:1",
+	})
+	if err != nil {
+		return fmt.Errorf("generating devcontainer.json: %w", err)
 	}
-
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("writing config: %w", err)
+	p := devcontainer.DevContainerPath(workspace)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
 	}
-
-	success("Saved " + path)
+	if err := os.WriteFile(p, data, 0o644); err != nil {
+		return err
+	}
+	success("Saved " + p)
 	return nil
+}
+
+// mapToProjectConfig converts the wizard's config map to a ProjectConfig via JSON
+// (the map keys are ProjectConfig's json tags).
+func mapToProjectConfig(m map[string]interface{}) (config.ProjectConfig, error) {
+	var pc config.ProjectConfig
+	if len(m) == 0 {
+		return pc, nil
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		return pc, err
+	}
+	err = json.Unmarshal(data, &pc)
+	return pc, err
 }
