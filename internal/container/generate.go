@@ -57,15 +57,10 @@ func GenerateDockerfile(opts DockerfileOpts) (string, error) {
 		}
 		b.WriteString("\n# Apt packages\n")
 		b.WriteString("USER root\n")
-		// If the base Dockerfile already ran apt-get update (local build), the
-		// package lists are cached from an earlier layer, so skip the redundant
-		// ~30MB re-download. For GHCR-pulled bases the lists were cleaned, so
-		// we must fetch them.
-		if strings.Contains(opts.BaseDockerfile, "apt-get update") {
-			b.WriteString("RUN apt-get install -y --no-install-recommends \\\n")
-		} else {
-			b.WriteString("RUN apt-get update && apt-get install -y --no-install-recommends \\\n")
-		}
+		// Always refresh the package lists in this layer: the base image cleans
+		// /var/lib/apt/lists/* after its own installs (standard hygiene), so the
+		// lists are absent here even when the base ran apt-get update earlier.
+		b.WriteString("RUN apt-get update && apt-get install -y --no-install-recommends \\\n")
 		for _, pkg := range sorted {
 			b.WriteString(fmt.Sprintf("  %s \\\n", pkg))
 		}

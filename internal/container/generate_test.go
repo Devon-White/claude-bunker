@@ -185,3 +185,19 @@ func TestGenerateDockerfile_EndsWithUser(t *testing.T) {
 		t.Errorf("Dockerfile should end with USER %s, got:\n%s", ContainerUser, got)
 	}
 }
+
+func TestGenerateDockerfile_AptAlwaysUpdates(t *testing.T) {
+	// A base that runs its own apt-get update AND cleans the lists (standard
+	// image hygiene). The generated apt layer must still run apt-get update,
+	// because the lists were removed by the base layer.
+	base := "FROM debian:bookworm-slim\nRUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*"
+	got, err := GenerateDockerfile(DockerfileOpts{BaseDockerfile: base, AptPackages: []string{"ripgrep"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The GENERATED apt layer (after the base) must contain "apt-get update && apt-get install".
+	genLayer := got[len(base):]
+	if !strings.Contains(genLayer, "apt-get update && apt-get install") {
+		t.Errorf("generated apt layer must run apt-get update before install; got:\n%s", genLayer)
+	}
+}
