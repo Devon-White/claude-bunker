@@ -90,18 +90,30 @@ func (s *jsonMapStore) Get(key string) string {
 	return s.cache[key]
 }
 
-// Set stores a key-value pair and persists to disk.
-// Setting an empty value deletes the key.
+// Set stores a key-value pair and persists to disk. Empty value deletes the key.
 func (s *jsonMapStore) Set(key, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ensureLoaded()
-	if value == "" {
-		delete(s.cache, key)
-	} else {
-		s.cache[key] = value
+	p := s.path()
+	if p == "" {
+		// in-memory only
+		s.ensureLoaded()
+		if value == "" {
+			delete(s.cache, key)
+		} else {
+			s.cache[key] = value
+		}
+		return nil
 	}
-	return s.persist()
+	return withFileLock(p, func() error {
+		s.reload() // pick up other processes' writes before mutating
+		if value == "" {
+			delete(s.cache, key)
+		} else {
+			s.cache[key] = value
+		}
+		return s.persist()
+	})
 }
 
 // All returns a copy of all key-value pairs.
@@ -116,19 +128,38 @@ func (s *jsonMapStore) All() map[string]string {
 	return cp
 }
 
-// Prune removes entries for which keep returns false. Persists only if entries were removed.
+// Prune removes entries for which keep returns false. Persists if anything changed.
 func (s *jsonMapStore) Prune(keep func(key string) bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ensureLoaded()
-	changed := false
-	for k := range s.cache {
-		if !keep(k) {
-			delete(s.cache, k)
-			changed = true
+	p := s.path()
+	if p == "" {
+		s.ensureLoaded()
+		for k := range s.cache {
+			if !keep(k) {
+				delete(s.cache, k)
+			}
 		}
+		return
 	}
-	if changed {
-		_ = s.persist()
-	}
+	_ = withFileLock(p, func() error {
+		s.reload()
+		changed := false
+		for k := range s.cache {
+			if !keep(k) {
+				delete(s.cache, k)
+				changed = true
+			}
+		}
+		if changed {
+			return s.persist()
+		}
+		return nil
+	})
+}
+
+// reload forces a re-read from disk into the cache. Must hold mu.
+func (s *jsonMapStore) reload() {
+	s.loaded = false
+	s.ensureLoaded()
 }
