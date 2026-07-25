@@ -8,7 +8,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 
-	"github.com/Devon-White/claude-bunker/internal/config"
+	"github.com/Devon-White/claude-bunker/internal/devcontainer"
 )
 
 func TestNonInteractiveInit(t *testing.T) {
@@ -44,11 +44,11 @@ func TestRunInit_NonTTYWithoutDefaultsLeavesFileUntouched(t *testing.T) {
 	ws := t.TempDir()
 	t.Setenv("CLAUDE_BUNKER_WS", ws)
 
-	cfgPath := config.ConfigPath(ws)
+	cfgPath := devcontainer.DevContainerPath(ws)
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	original := []byte(`{"apt":["ripgrep"]}` + "\n")
+	original := []byte(`{"customizations":{"claude-bunker":{"apt":["ripgrep"]}}}` + "\n")
 	if err := os.WriteFile(cfgPath, original, 0o644); err != nil {
 		t.Fatal(err)
 	}

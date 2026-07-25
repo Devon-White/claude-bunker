@@ -11,6 +11,7 @@ import (
 
 	"github.com/Devon-White/claude-bunker/internal/config"
 	ctr "github.com/Devon-White/claude-bunker/internal/container"
+	"github.com/Devon-White/claude-bunker/internal/devcontainer"
 	"github.com/Devon-White/claude-bunker/internal/sessions"
 )
 
@@ -95,7 +96,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	// Resolved project config
-	cfg, cfgErr := config.LoadProjectConfig(workspace)
+	cfg, _, cfgErr := devcontainer.LoadProjectConfig(workspace)
 	if cfgErr == nil {
 		printResolvedConfig(cfg)
 	}

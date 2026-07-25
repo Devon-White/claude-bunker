@@ -128,3 +128,7 @@ func expandProjectConfig(cfg *ProjectConfig) {
 	}
 }
 
+// ExpandProjectConfig expands $VAR / ${VAR} / ${VAR:-default} references in a
+// ProjectConfig's string fields (ghToken, allowDomains, env, commands). Used by
+// the runtime read path after loading .devcontainer/devcontainer.json.
+func ExpandProjectConfig(cfg *ProjectConfig) { expandProjectConfig(cfg) }

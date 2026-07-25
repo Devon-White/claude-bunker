@@ -18,6 +18,7 @@ import (
 
 	"github.com/Devon-White/claude-bunker/internal/config"
 	"github.com/Devon-White/claude-bunker/internal/container"
+	"github.com/Devon-White/claude-bunker/internal/devcontainer"
 	bunkerlog "github.com/Devon-White/claude-bunker/internal/log"
 	"github.com/Devon-White/claude-bunker/internal/platform"
 	"github.com/Devon-White/claude-bunker/internal/sandbox"
@@ -303,13 +304,15 @@ func failClosed(err error, overridden bool, remediation string) error {
 
 // loadConfig reads project config and resolves auth token precedence.
 func (r *runner) loadConfig(flags bunkerFlags) {
-	cfg, err := config.LoadProjectConfig(r.workspace)
-	if fatal := failClosed(err, flags.force, "Fix the config, or re-run with --force to ignore it."); fatal != nil {
-		die("Failed to parse config: " + fatal.Error())
+	cfg, _, err := devcontainer.LoadProjectConfig(r.workspace)
+	if fatal := failClosed(err, flags.force, "Fix .devcontainer/devcontainer.json, or re-run with --force to ignore it."); fatal != nil {
+		die("Failed to parse devcontainer.json: " + fatal.Error())
 	}
 	if err != nil {
-		warn("Continuing despite config error (--force): " + err.Error())
+		warn("Continuing despite devcontainer.json error (--force): " + err.Error())
 	}
+	// Expand ${VAR} references for runtime use (auth token, firewall domains, env).
+	config.ExpandProjectConfig(&cfg)
 	r.projectCfg = cfg
 
 	// Resolve auth tokens: CLI flags > config > env vars

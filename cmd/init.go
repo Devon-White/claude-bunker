@@ -16,6 +16,7 @@ import (
 
 	"github.com/Devon-White/claude-bunker/internal/config"
 	"github.com/Devon-White/claude-bunker/internal/container"
+	"github.com/Devon-White/claude-bunker/internal/devcontainer"
 )
 
 // stdinIsTTY is a seam over isTTY so tests can force the non-interactive path.
@@ -57,14 +58,14 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	workspace := resolveWorkspace()
 
-	cfgPath := config.ConfigPath(workspace)
+	cfgPath := devcontainer.DevContainerPath(workspace)
 
 	// Load existing config if present (for pre-populating the wizard)
 	var existing *config.ProjectConfig
 	if _, err := os.Stat(cfgPath); err == nil {
-		if loaded, err := config.LoadProjectConfig(workspace); err == nil {
+		if loaded, _, err := devcontainer.LoadProjectConfig(workspace); err == nil {
 			existing = &loaded
-			info("Updating existing config: " + cfgPath)
+			info("Updating existing devcontainer: " + cfgPath)
 		}
 	}
 
