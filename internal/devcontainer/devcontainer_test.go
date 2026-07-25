@@ -66,8 +66,8 @@ func TestParseAndToProjectConfig(t *testing.T) {
 
 func TestCommandToString(t *testing.T) {
 	cases := map[string]string{
-		`"a"`:            "a",
-		`["a","b"]`:      "a && b",
+		`"a"`:               "a",
+		`["a","b"]`:         "a && b",
 		`{"x":"a","y":"b"}`: "", // object form: no single command; empty is acceptable
 	}
 	for in, want := range cases {

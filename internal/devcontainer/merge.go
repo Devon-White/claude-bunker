@@ -1,6 +1,9 @@
 package devcontainer
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // forcedCaps are the network capabilities bunker's firewall requires.
 var forcedCaps = []string{"NET_ADMIN", "NET_RAW"}
@@ -27,7 +30,7 @@ func Merge(existing DevContainer) DevContainer {
 
 	caps := append([]string{}, existing.CapAdd...)
 	for _, forced := range forcedCaps {
-		if !contains(caps, forced) {
+		if !slices.Contains(caps, forced) {
 			caps = append(caps, forced)
 		}
 	}

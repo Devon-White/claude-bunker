@@ -2,6 +2,7 @@ package devcontainer
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 
@@ -33,7 +34,7 @@ func TestGenerate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generated file does not re-parse: %v", err)
 	}
-	if !contains(dc.CapAdd, "NET_ADMIN") || !contains(dc.CapAdd, "NET_RAW") {
+	if !slices.Contains(dc.CapAdd, "NET_ADMIN") || !slices.Contains(dc.CapAdd, "NET_RAW") {
 		t.Errorf("capAdd must force NET_ADMIN/NET_RAW: %+v", dc.CapAdd)
 	}
 	if dc.RemoteUser != "claude-bunker" {
@@ -60,4 +61,3 @@ func TestGenerate(t *testing.T) {
 		t.Error("customizations namespace missing")
 	}
 }
-

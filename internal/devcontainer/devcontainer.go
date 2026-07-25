@@ -107,13 +107,3 @@ func joinCommands(cmds []string) string {
 	}
 	return out
 }
-
-// contains reports whether a string slice contains a value.
-func contains(s []string, v string) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
-	}
-	return false
-}

@@ -1,6 +1,9 @@
 package devcontainer
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestIsBunkerGenerated(t *testing.T) {
 	if !IsBunkerGenerated([]byte(GeneratedMarker + "\n{}")) {
@@ -31,10 +34,10 @@ func TestMerge_ForcesSecurityFields(t *testing.T) {
 	if got.RemoteUser != "claude-bunker" {
 		t.Errorf("remoteUser must be forced: %q", got.RemoteUser)
 	}
-	if !contains(got.CapAdd, "NET_ADMIN") || !contains(got.CapAdd, "NET_RAW") {
+	if !slices.Contains(got.CapAdd, "NET_ADMIN") || !slices.Contains(got.CapAdd, "NET_RAW") {
 		t.Errorf("NET_ADMIN/NET_RAW must be unioned in: %+v", got.CapAdd)
 	}
-	if !contains(got.CapAdd, "SYS_PTRACE") {
+	if !slices.Contains(got.CapAdd, "SYS_PTRACE") {
 		t.Errorf("user's cap must be preserved: %+v", got.CapAdd)
 	}
 	// No duplicates when the user already listed a forced cap.
