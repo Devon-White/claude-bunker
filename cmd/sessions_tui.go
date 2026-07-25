@@ -38,8 +38,6 @@ func runSessionsTUI(cmd *cobra.Command, args []string) error {
 	defer cli.Close()
 
 	mgr := sessions.NewManager(cli)
-	syncer := sessions.NewTitleSyncer(cli)
-	mgr.SetTitleSyncer(syncer)
 
 	workspace := resolveWorkspace()
 	watcher := sessions.NewWatcher(mgr, workspace)
@@ -47,12 +45,12 @@ func runSessionsTUI(cmd *cobra.Command, args []string) error {
 		// When a Stop hook pushes a title (e.g., after /rename),
 		// store it in the registry so FetchSnapshot picks it up.
 		if e.Event == sessions.HookStop && e.Title != "" && e.SessionID != "" {
-			syncer.PushTitle(e.ContainerID, e.SessionID, e.Title)
+			_ = sessions.SetSessionTitle(e.ContainerID, e.SessionID, e.Title)
 		}
 	})
 	updateCh := watcher.Subscribe(ctx)
 
-	m := newSessionsModel(ctx, cancel, mgr, syncer, cli, updateCh)
+	m := newSessionsModel(ctx, cancel, mgr, cli, updateCh)
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	finalModel, err := p.Run()
@@ -90,7 +88,6 @@ type sessionsModel struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	mgr      *sessions.Manager
-	syncer   sessions.TitleSyncer
 	cli      *client.Client
 	updateCh <-chan sessions.UpdateMsg
 
@@ -136,13 +133,12 @@ type viewItem struct {
 	depth       int
 }
 
-func newSessionsModel(ctx context.Context, cancel context.CancelFunc, mgr *sessions.Manager, syncer sessions.TitleSyncer, cli sessions.DockerClient, updateCh <-chan sessions.UpdateMsg) sessionsModel {
+func newSessionsModel(ctx context.Context, cancel context.CancelFunc, mgr *sessions.Manager, cli sessions.DockerClient, updateCh <-chan sessions.UpdateMsg) sessionsModel {
 	dockerCli, _ := cli.(*client.Client)
 	return sessionsModel{
 		ctx:      ctx,
 		cancel:   cancel,
 		mgr:      mgr,
-		syncer:   syncer,
 		cli:      dockerCli,
 		updateCh: updateCh,
 		expanded: make(map[string]bool),
@@ -334,32 +330,8 @@ func (m sessionsModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			// If session ID wasn't resolved during FetchSnapshot (e.g., first
-			// snapshot arrived before exec completed), try resolving on-demand.
+			// SessionID is populated by FetchSnapshot from `claude agents --json`.
 			sessionID := s.SessionID
-			if sessionID == "" && m.syncer != nil {
-				resolved, err := m.syncer.ResolveSessionIDs(m.ctx, item.containerID)
-				if err != nil || len(resolved) == 0 {
-					m.status = "Cannot rename: unable to resolve session ID"
-					return m, nil
-				}
-				// Single session: use it directly. Multiple: pick most recent.
-				if len(resolved) == 1 {
-					for _, sid := range resolved {
-						sessionID = sid
-					}
-				} else {
-					// Pick the session with the highest PID (most recent).
-					bestPID := 0
-					for pid, sid := range resolved {
-						if pid > bestPID {
-							bestPID = pid
-							sessionID = sid
-						}
-					}
-				}
-				s.SessionID = sessionID
-			}
 			if sessionID == "" {
 				m.status = "Cannot rename: session ID not available"
 				return m, nil
@@ -446,17 +418,15 @@ func (m sessionsModel) handleRename(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		mgrRef := m.mgr
-		syncerRef := m.syncer
 		containerID := r.containerID
 
 		if r.sessionID != "" {
-			// Session-level rename: sync title with Claude Code's JSONL storage.
+			// Session-level rename: store a bunker-set title as a fallback/
+			// override for when Claude's own agent name is empty or stale.
 			sessionID := r.sessionID
 			return m, func() tea.Msg {
-				if syncerRef != nil {
-					if err := syncerRef.SetTitle(context.Background(), containerID, sessionID, newName); err != nil {
-						return actionErrorMsg{err: fmt.Errorf("rename session: %w", err)}
-					}
+				if err := sessions.SetSessionTitle(containerID, sessionID, newName); err != nil {
+					return actionErrorMsg{err: fmt.Errorf("rename session: %w", err)}
 				}
 				snap, err := mgrRef.FetchSnapshot(context.Background())
 				if err != nil {

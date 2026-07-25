@@ -34,7 +34,6 @@ func runSessionsList(cmd *cobra.Command, args []string) error {
 	defer cli.Close()
 
 	mgr := sessions.NewManager(cli)
-	mgr.SetTitleSyncer(sessions.NewTitleSyncer(cli))
 	snap, err := mgr.FetchSnapshot(ctx)
 	if err != nil {
 		return fmt.Errorf("fetching sessions: %w", err)

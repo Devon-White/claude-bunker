@@ -219,11 +219,15 @@ func (m *Manager) claudeSessions(ctx context.Context, containerID string) []Sess
 			subagents = append(subagents, SubagentInfo{PID: strconv.Itoa(a.PID), Name: a.Name})
 			continue
 		}
+		title := a.Name
+		if title == "" {
+			title = GetSessionTitle(containerID, a.SessionID)
+		}
 		sessions = append(sessions, SessionInfo{
 			PID:       strconv.Itoa(a.PID),
 			Command:   "claude",
 			SessionID: a.SessionID,
-			Title:     a.Name, // Claude's authoritative name; store fallback applied in Task 5
+			Title:     title,
 		})
 	}
 	if len(sessions) > 0 {
