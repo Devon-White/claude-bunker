@@ -385,16 +385,26 @@ func TestImageFingerprint_DigestChangeInvalidates(t *testing.T) {
 				"ghcr.io/devcontainers/features/node:1": {"version": "20"},
 			},
 		},
-		FeatureDigests: map[string]string{"ghcr.io/devcontainers/features/node:1": "sha256:aaa"},
+		// Two entries so the deterministic-sort path is actually exercised
+		// (a single-entry map has only one possible iteration order).
+		FeatureDigests: map[string]string{
+			"ghcr.io/devcontainers/features/node:1": "sha256:aaa",
+			"ghcr.io/devcontainers/features/go:1":   "sha256:ccc",
+		},
 	}
 	changed := base
-	changed.FeatureDigests = map[string]string{"ghcr.io/devcontainers/features/node:1": "sha256:bbb"}
+	changed.FeatureDigests = map[string]string{
+		"ghcr.io/devcontainers/features/node:1": "sha256:bbb", // node digest changed
+		"ghcr.io/devcontainers/features/go:1":   "sha256:ccc",
+	}
 
 	if imageFingerprint(base) == imageFingerprint(changed) {
 		t.Error("a feature digest change must change the image fingerprint")
 	}
-	// Same digests → same fingerprint (determinism).
-	if imageFingerprint(base) != imageFingerprint(base) {
+	// Same digests → same fingerprint (determinism across independent calls).
+	fp1 := imageFingerprint(base)
+	fp2 := imageFingerprint(base)
+	if fp1 != fp2 {
 		t.Error("fingerprint must be deterministic")
 	}
 }
