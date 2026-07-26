@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
@@ -27,6 +29,7 @@ Use --all to remove all resources without interactive selection.`,
 func init() {
 	pruneCmd.Flags().Bool("force", false, "Skip confirmation prompt")
 	pruneCmd.Flags().Bool("all", false, "Remove all volumes/images without interactive selection")
+	pruneCmd.Flags().Bool("json", false, "Output candidates as JSON (non-interactive; with --force, removes them)")
 }
 
 func runPrune(cmd *cobra.Command, args []string) error {
@@ -41,6 +44,19 @@ func runPrune(cmd *cobra.Command, args []string) error {
 
 	force, _ := cmd.Flags().GetBool("force")
 	all, _ := cmd.Flags().GetBool("all")
+
+	// JSON mode is a separate early-return branch (mirrors status.go / sessions_list.go):
+	// non-interactive; DEFAULT is dry-run (list candidates, remove nothing); --force performs
+	// removal. --all is meaningless here (JSON operates on all candidates) and is ignored.
+	if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
+		rep, err := gatherPruneReport(ctx, cli, force)
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rep)
+	}
 
 	if err := pruneVolumes(ctx, cli, force, all); err != nil {
 		return err
@@ -176,7 +192,7 @@ func pruneVolumes(ctx context.Context, cli *dockerclient.Client, force, all bool
 			}
 			return labels, grouped
 		},
-		label:  func(v container.BunkerVolume) string { return v.Name },
+		label: func(v container.BunkerVolume) string { return v.Name },
 		remove: func(ctx context.Context, cli *dockerclient.Client, v container.BunkerVolume) error {
 			return container.RemoveVolume(ctx, cli, v.Name)
 		},
@@ -197,9 +213,110 @@ func pruneImages(ctx context.Context, cli *dockerclient.Client, force, all bool)
 			}
 			return labels, grouped
 		},
-		label:  func(img container.BunkerImage) string { return img.Tag },
+		label: func(img container.BunkerImage) string { return img.Tag },
 		remove: func(ctx context.Context, cli *dockerclient.Client, img container.BunkerImage) error {
 			return container.RemoveImageByTag(ctx, cli, img.Tag)
 		},
 	})
+}
+
+// pruneReport is the machine-readable result of `prune --json`. When DryRun is
+// true nothing was removed (the default); with --json --force items are removed
+// and the *Removed counts / BytesReclaimed reflect it.
+type pruneReport struct {
+	DryRun         bool                `json:"dry_run"`
+	Volumes        []pruneVolumeResult `json:"volumes"`
+	Images         []pruneImageResult  `json:"images"`
+	VolumesRemoved int                 `json:"volumes_removed"`
+	ImagesRemoved  int                 `json:"images_removed"`
+	// BytesReclaimed is images-only: BunkerVolume has no Size field, so volume
+	// bytes cannot be reported without extra Docker calls (out of scope).
+	BytesReclaimed int64    `json:"bytes_reclaimed"`
+	Errors         []string `json:"errors,omitempty"`
+}
+
+type pruneVolumeResult struct {
+	Name    string `json:"name"`
+	Kind    string `json:"kind"`
+	Project string `json:"project"`
+	Removed bool   `json:"removed"`
+	Error   string `json:"error,omitempty"`
+}
+
+type pruneImageResult struct {
+	ID      string `json:"id"`
+	Tag     string `json:"tag"`
+	Size    int64  `json:"size"` // bytes; lets a dry-run consumer sum a "reclaimable" total
+	Removed bool   `json:"removed"`
+	Error   string `json:"error,omitempty"`
+}
+
+// gatherPruneReport lists claude-bunker volumes and images and, when remove is
+// true, removes them, assembling a pruneReport. Unlike the interactive path
+// (which warns and returns nil on a list failure), a list error here is returned
+// as a real error so runPrune exits non-zero. It prints nothing; per-item removal
+// failures land in the report's Errors slice.
+func gatherPruneReport(ctx context.Context, cli *dockerclient.Client, remove bool) (pruneReport, error) {
+	vols, err := container.ListBunkerVolumesDetailed(ctx, cli)
+	if err != nil {
+		return pruneReport{}, fmt.Errorf("failed to list volumes: %w", err)
+	}
+	imgs, err := container.ListBunkerImages(ctx, cli)
+	if err != nil {
+		return pruneReport{}, fmt.Errorf("failed to list images: %w", err)
+	}
+	removeVol := func(v container.BunkerVolume) error {
+		return container.RemoveVolume(ctx, cli, v.Name)
+	}
+	removeImg := func(img container.BunkerImage) error {
+		return container.RemoveImageByTag(ctx, cli, img.Tag)
+	}
+	return buildPruneReport(vols, imgs, remove, removeVol, removeImg), nil
+}
+
+// buildPruneReport is the pure core of gatherPruneReport. When remove is false it
+// lists candidates only (DryRun=true, nothing removed). When remove is true it
+// invokes removeVol/removeImg per item, recording each item's Removed/Error,
+// tallying VolumesRemoved/ImagesRemoved and (images only) BytesReclaimed; per-item
+// failures are appended to Errors. It is decoupled from Docker so callers/tests can
+// inject fake remove callbacks.
+func buildPruneReport(
+	vols []container.BunkerVolume,
+	imgs []container.BunkerImage,
+	remove bool,
+	removeVol func(container.BunkerVolume) error,
+	removeImg func(container.BunkerImage) error,
+) pruneReport {
+	rep := pruneReport{DryRun: !remove}
+
+	for _, v := range vols {
+		res := pruneVolumeResult{Name: v.Name, Kind: v.Kind, Project: v.Project}
+		if remove {
+			if err := removeVol(v); err != nil {
+				res.Error = err.Error()
+				rep.Errors = append(rep.Errors, fmt.Sprintf("volume %s: %s", v.Name, err.Error()))
+			} else {
+				res.Removed = true
+				rep.VolumesRemoved++
+			}
+		}
+		rep.Volumes = append(rep.Volumes, res)
+	}
+
+	for _, img := range imgs {
+		res := pruneImageResult{ID: img.ID, Tag: img.Tag, Size: img.Size}
+		if remove {
+			if err := removeImg(img); err != nil {
+				res.Error = err.Error()
+				rep.Errors = append(rep.Errors, fmt.Sprintf("image %s: %s", img.Tag, err.Error()))
+			} else {
+				res.Removed = true
+				rep.ImagesRemoved++
+				rep.BytesReclaimed += img.Size
+			}
+		}
+		rep.Images = append(rep.Images, res)
+	}
+
+	return rep
 }
