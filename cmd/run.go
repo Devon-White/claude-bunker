@@ -147,7 +147,11 @@ type bunkerFlags struct {
 // Boolean flags: --verbose, --quiet, --keep, --rebuild, --force, --no-sandbox,
 // --no-color.
 // A bare "--" terminates bunker parsing: it is dropped and every token after it
-// is forwarded verbatim in f.remaining.
+// is forwarded verbatim in f.remaining. This governs the default `claude` run
+// path (root has DisableFlagParsing:true, so this function sees the raw args).
+// The `shell` subcommand has DisableFlagParsing:false, so cobra consumes a bare
+// "--" before this runs — the terminator is effective for the default claude
+// passthrough, not for `shell`.
 // Returns the extracted values and the remaining args to pass through.
 func extractBunkerFlags(args []string) bunkerFlags {
 	var f bunkerFlags
@@ -171,9 +175,10 @@ func extractBunkerFlags(args []string) bunkerFlags {
 		arg := args[i]
 
 		// `--` terminator: everything after the first bare `--` is forwarded to
-		// claude/bash verbatim, with no further bunker-flag interpretation. The
-		// `--` itself is dropped. args[i+1:] is a valid empty slice when `--` is
-		// the last token, so `["--"]` alone yields no remaining args.
+		// claude verbatim, with no further bunker-flag interpretation. The `--`
+		// itself is dropped. args[i+1:] is a valid empty slice when `--` is the
+		// last token, so `["--"]` alone yields no remaining args. (Effective on
+		// the default claude run path only; cobra strips `--` for `shell`.)
 		if arg == "--" {
 			f.remaining = append(f.remaining, args[i+1:]...)
 			break
