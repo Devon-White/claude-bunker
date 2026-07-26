@@ -30,7 +30,7 @@ func TestWatcher_InitialSnapshot(t *testing.T) {
 	}
 
 	mgr := NewManager(cli)
-	watcher := NewWatcher(mgr)
+	watcher := NewWatcher(mgr, defaultPollInterval)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -57,7 +57,7 @@ func TestWatcher_InitialSnapshot(t *testing.T) {
 func TestWatcher_ContextCancellation(t *testing.T) {
 	cli := &mockClient{}
 	mgr := NewManager(cli)
-	watcher := NewWatcher(mgr)
+	watcher := NewWatcher(mgr, defaultPollInterval)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := watcher.Subscribe(ctx)
@@ -118,7 +118,7 @@ func TestWatcher_EventTriggersRefresh(t *testing.T) {
 	}
 
 	mgr := NewManager(cli)
-	watcher := NewWatcher(mgr)
+	watcher := NewWatcher(mgr, defaultPollInterval)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -143,4 +143,25 @@ func TestWatcher_EventTriggersRefresh(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		t.Fatal("timed out waiting for event-triggered update")
 	}
+}
+
+func TestNewWatcher_Interval(t *testing.T) {
+	mgr := NewManager(&mockClient{})
+
+	t.Run("stores explicit interval", func(t *testing.T) {
+		w := NewWatcher(mgr, 10*time.Second)
+		if w.pollInterval != 10*time.Second {
+			t.Errorf("pollInterval = %v, want %v", w.pollInterval, 10*time.Second)
+		}
+	})
+
+	t.Run("non-positive interval falls back to default", func(t *testing.T) {
+		w := NewWatcher(mgr, 0)
+		if w.pollInterval != defaultPollInterval {
+			t.Errorf("pollInterval = %v, want %v", w.pollInterval, defaultPollInterval)
+		}
+		if defaultPollInterval != 3*time.Second {
+			t.Errorf("defaultPollInterval = %v, want 3s", defaultPollInterval)
+		}
+	})
 }

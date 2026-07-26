@@ -37,7 +37,8 @@ func runSessionsTUI(cmd *cobra.Command, args []string) error {
 
 	mgr := sessions.NewManager(cli)
 
-	watcher := sessions.NewWatcher(mgr)
+	interval, _ := cmd.Flags().GetDuration("interval")
+	watcher := sessions.NewWatcher(mgr, interval)
 	updateCh := watcher.Subscribe(ctx)
 
 	m := newSessionsModel(ctx, cancel, mgr, cli, updateCh)

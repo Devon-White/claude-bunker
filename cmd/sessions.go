@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"time"
+
 	"github.com/spf13/cobra"
 )
 
@@ -16,6 +18,11 @@ and automation (e.g., swarm orchestration).`,
 }
 
 func init() {
+	// --interval is scoped to the `sessions` TUI (the only NewWatcher caller);
+	// registering it on root would make it a no-op there. The 3s literal mirrors
+	// sessions.defaultPollInterval, which stays unexported.
+	sessionsCmd.Flags().Duration("interval", 3*time.Second, "Session-watcher poll interval")
+
 	sessionsCmd.AddCommand(sessionsListCmd)
 	sessionsCmd.AddCommand(sessionsStopCmd)
 	sessionsCmd.AddCommand(sessionsAttachCmd)

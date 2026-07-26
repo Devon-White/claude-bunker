@@ -21,17 +21,23 @@ type UpdateMsg struct {
 // (new sessions, subagents, title changes) that Docker events alone
 // cannot detect.
 type Watcher struct {
-	mgr *Manager
+	mgr          *Manager
+	pollInterval time.Duration
 }
 
-// NewWatcher creates a watcher.
-func NewWatcher(mgr *Manager) *Watcher {
-	return &Watcher{mgr: mgr}
+// NewWatcher creates a watcher. interval controls how often the poller
+// refreshes session state; a value <= 0 falls back to defaultPollInterval.
+func NewWatcher(mgr *Manager, interval time.Duration) *Watcher {
+	if interval <= 0 {
+		interval = defaultPollInterval
+	}
+	return &Watcher{mgr: mgr, pollInterval: interval}
 }
 
-// pollInterval is how often the watcher refreshes session state from
-// `claude agents --json` while subscribed.
-const pollInterval = 3 * time.Second
+// defaultPollInterval is the fallback cadence for refreshing session state
+// from `claude agents --json` while subscribed, used when NewWatcher is
+// given a non-positive interval.
+const defaultPollInterval = 3 * time.Second
 
 // Subscribe starts watching and returns a channel of UpdateMsg.
 // Cancel the context to stop watching. The channel is closed only after
@@ -105,7 +111,7 @@ func (w *Watcher) watchEvents(ctx context.Context, out chan<- UpdateMsg) {
 // detect session-level changes (new sessions, title renames, subagent
 // spawns) since Docker events only cover container lifecycle.
 func (w *Watcher) pollRefresh(ctx context.Context, out chan<- UpdateMsg) {
-	ticker := time.NewTicker(pollInterval)
+	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()
 
 	for {
