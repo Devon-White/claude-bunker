@@ -214,3 +214,19 @@ func TestPruneResources_DryRunPlansWithoutRemoving(t *testing.T) {
 		}
 	}
 }
+
+func TestPruneShouldRemove(t *testing.T) {
+	cases := []struct {
+		force, dryRun, want bool
+	}{
+		{force: false, dryRun: false, want: false}, // no force → list only
+		{force: true, dryRun: false, want: true},   // force, no dry-run → remove
+		{force: true, dryRun: true, want: false},   // dry-run WINS over force
+		{force: false, dryRun: true, want: false},  // dry-run, no force → list only
+	}
+	for _, tc := range cases {
+		if got := pruneShouldRemove(tc.force, tc.dryRun); got != tc.want {
+			t.Errorf("pruneShouldRemove(force=%v, dryRun=%v) = %v, want %v", tc.force, tc.dryRun, got, tc.want)
+		}
+	}
+}

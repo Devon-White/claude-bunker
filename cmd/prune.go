@@ -33,6 +33,13 @@ func init() {
 	pruneCmd.Flags().Bool("dry-run", false, "Show what would be removed without removing anything")
 }
 
+// pruneShouldRemove decides whether a prune actually removes resources.
+// --dry-run always wins: it forces a list-only (remove nothing) run even
+// when --force is also set.
+func pruneShouldRemove(force, dryRun bool) bool {
+	return force && !dryRun
+}
+
 func runPrune(cmd *cobra.Command, args []string) error {
 	initVerbosity(cmd)
 	dryRun, _ = cmd.Flags().GetBool("dry-run")
@@ -51,7 +58,7 @@ func runPrune(cmd *cobra.Command, args []string) error {
 	// non-interactive; DEFAULT is dry-run (list candidates, remove nothing); --force performs
 	// removal. --all is meaningless here (JSON operates on all candidates) and is ignored.
 	if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
-		rep, err := gatherPruneReport(ctx, cli, force)
+		rep, err := gatherPruneReport(ctx, cli, pruneShouldRemove(force, dryRun))
 		if err != nil {
 			return err
 		}
