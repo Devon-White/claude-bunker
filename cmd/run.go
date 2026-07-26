@@ -59,6 +59,7 @@ type runner struct {
 	execID    string              // Docker exec ID from ExecInteractive, used for cleanup session detection
 	reused    bool                // true when attaching to an already-running container with matching fingerprints
 	noCache   bool                // true when --rebuild is used; passed to Docker build as NoCache
+	dryRun    bool                // --dry-run: plan mutations, perform none, exit 0
 	force     bool                // --force: override fail-closed guards
 	noSandbox bool                // --no-sandbox: launch even if sandbox settings can't be seeded
 	proxyCfg  sandbox.ProxyConfig // proxy config detected from host env
@@ -133,6 +134,7 @@ type bunkerFlags struct {
 	verbose   bool
 	keep      bool
 	rebuild   bool
+	dryRun    bool
 	force     bool
 	noSandbox bool
 	noColor   bool
@@ -165,6 +167,7 @@ func extractBunkerFlags(args []string) bunkerFlags {
 		"--quiet":      &f.quiet,
 		"--keep":       &f.keep,
 		"--rebuild":    &f.rebuild,
+		"--dry-run":    &f.dryRun,
 		"--force":      &f.force,
 		"--no-sandbox": &f.noSandbox,
 		"--no-color":   &f.noColor,
@@ -258,11 +261,18 @@ func runInSandbox(passedArgs []string, execCmd string) error {
 		dieCode(ExitDockerUnavailable, err.Error())
 	}
 
+	// dry-run may arrive via extractBunkerFlags (default run) or be pre-set on the
+	// package var by the shell subcommand's cobra flag. Funnel both into dryRun.
+	if flags.dryRun {
+		dryRun = true
+	}
+
 	r := &runner{
 		ctx:       ctx,
 		cancel:    cancel,
 		cli:       cli,
 		workspace: resolveWorkspace(),
+		dryRun:    dryRun,
 		force:     flags.force,
 		noSandbox: flags.noSandbox,
 	}
@@ -285,16 +295,30 @@ func runInSandbox(passedArgs []string, execCmd string) error {
 	// Handle --rebuild: force a clean slate
 	if flags.rebuild {
 		r.noCache = true
-		info("Rebuild requested — clearing cache and removing existing image...")
-		_ = config.ClearFingerprint(r.containerName)
-		_ = container.RemoveImageByTag(r.ctx, r.cli, r.imageTag)
-		if id, err := container.FindByLabel(r.ctx, r.cli, r.containerName); err == nil && id != "" {
-			_ = container.Stop(r.ctx, r.cli, id)
-			_ = container.Remove(r.ctx, r.cli, id)
+		if r.dryRun {
+			plan("would clear fingerprint, remove image " + r.imageTag +
+				", and stop+remove any existing container (--rebuild)")
+		} else {
+			info("Rebuild requested — clearing cache and removing existing image...")
+			_ = config.ClearFingerprint(r.containerName)
+			_ = container.RemoveImageByTag(r.ctx, r.cli, r.imageTag)
+			if id, err := container.FindByLabel(r.ctx, r.cli, r.containerName); err == nil && id != "" {
+				_ = container.Stop(r.ctx, r.cli, id)
+				_ = container.Remove(r.ctx, r.cli, id)
+			}
 		}
 	}
 
 	r.resolveContainer()
+
+	// Planning pass: resolveContainer has computed the reuse/recreate/create
+	// decision (and, under dryRun, suppressed its own Stop/Remove side effects).
+	// Report the ordered plan and exit before any build/create/seed/exec.
+	if r.dryRun {
+		r.planRun(execCmd, flags.remaining)
+		cli.Close()
+		os.Exit(0)
+	}
 
 	if r.containerID == "" {
 		r.buildAndCreate()
@@ -455,6 +479,10 @@ func (r *runner) resolveContainer() {
 			r.reused = true
 			return
 		}
+		// Under dry-run, don't stop/remove; the planning pass reports "would create+start".
+		if r.dryRun {
+			return
+		}
 		if r.fpResult.ImageMatch {
 			info("Container configuration changed — recreating sandbox...")
 		} else {
@@ -468,10 +496,46 @@ func (r *runner) resolveContainer() {
 		}
 	} else {
 		if id, err := container.FindByLabel(r.ctx, r.cli, r.containerName); err == nil && id != "" {
+			if r.dryRun {
+				return
+			}
 			if err := container.Remove(r.ctx, r.cli, id); err != nil {
 				verbose("Remove stopped container: " + err.Error())
 			}
 		}
+	}
+}
+
+// planRun prints the ordered plan for a dry-run of the run/shell path. It mirrors
+// the real control flow: a reused container skips build/seed and only re-injects
+// auth; a fresh/recreated container is built, created, firewalled, and seeded.
+func (r *runner) planRun(execCmd string, args []string) {
+	if r.reused {
+		planf("would reuse running container %s (image %s)", r.containerName, r.imageTag)
+		if r.auth.HasSecrets() {
+			plan("would re-inject auth secrets into the reused container")
+		}
+	} else {
+		if !r.fpResult.ImageMatch || !container.ImageExists(r.ctx, r.cli, r.imageTag) {
+			planf("would build image %s", r.imageTag)
+		} else {
+			planf("would reuse image %s", r.imageTag)
+		}
+		planf("would create and start container %s", r.containerName)
+		planf("would configure firewall (%d extra allowed domain(s))", len(r.extraDomains))
+		plan("would seed managed-settings.json and copy .claude/ into the container")
+		if r.auth.HasSecrets() {
+			plan("would inject auth secrets")
+		}
+	}
+	if execCmd == "claude" {
+		if len(args) > 0 {
+			planf("would launch: claude %s", strings.Join(args, " "))
+		} else {
+			plan("would launch: claude")
+		}
+	} else {
+		planf("would launch: %s", execCmd)
 	}
 }
 

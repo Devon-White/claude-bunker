@@ -59,6 +59,8 @@ func init() {
 	}
 
 	initCmd.Flags().Bool("defaults", false, "Write a default config non-interactively (no prompts)")
+	shellCmd.Flags().Bool("dry-run", false, "Show what would be built/created without launching")
+	initCmd.Flags().Bool("dry-run", false, "Show what would be written without creating any files")
 	versionCmd.Flags().Bool("json", false, "Output as JSON")
 	statusCmd.Flags().Bool("json", false, "Output as JSON")
 

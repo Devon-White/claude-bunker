@@ -102,9 +102,29 @@ func die(msg string) {
 }
 
 func success(msg string) {
+	if dryRun {
+		return
+	}
 	if verbosity >= 0 {
 		fmt.Fprintln(errW, prefixStyle.Render("[claude-bunker]"), successMsgStyle.Render(msg))
 	}
+}
+
+// dryRun is set by --dry-run. When true, mutating commands describe their plan
+// via plan()/planf() and perform no host or Docker mutations, and success() is
+// suppressed so "planned" is never mistaken for "done".
+var dryRun bool
+
+// plan prints a planned (not performed) action to stderr with a distinct
+// DRY-RUN label. Unlike info/warn/success it ALWAYS prints — ignoring --quiet —
+// because the plan is the entire point of the invocation.
+func plan(msg string) {
+	fmt.Fprintln(errW, prefixStyle.Render("[claude-bunker]"), warnLabelStyle.Render("DRY-RUN"), msg)
+}
+
+// planf is plan with printf-style formatting.
+func planf(format string, a ...any) {
+	plan(fmt.Sprintf(format, a...))
 }
 
 // --- Key-value helpers for status output ---

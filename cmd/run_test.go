@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -372,5 +373,46 @@ func TestLoadConfigSetsNoDevcontainer(t *testing.T) {
 				t.Errorf("noDevcontainer = %v, want %v", r.noDevcontainer, tt.wantNoDevcontainer)
 			}
 		})
+	}
+}
+
+func TestExtractBunkerFlags_DryRun(t *testing.T) {
+	f := extractBunkerFlags([]string{"--dry-run", "--model", "opus"})
+	if !f.dryRun {
+		t.Error("--dry-run must set bunkerFlags.dryRun")
+	}
+	if slices.Contains(f.remaining, "--dry-run") {
+		t.Error("--dry-run must be consumed, not passed through to claude")
+	}
+	if !slices.Equal(f.remaining, []string{"--model", "opus"}) {
+		t.Errorf("remaining = %v, want [--model opus]", f.remaining)
+	}
+}
+
+// planRun's reuse branch performs no Docker calls (r.ctx/r.cli/ImageExists are
+// only touched on the fresh-build branch), so it is unit-testable without a daemon.
+func TestPlanRun_ReusePathNoDockerCalls(t *testing.T) {
+	var buf bytes.Buffer
+	origErr := errW
+	errW = &buf
+	t.Cleanup(func() { errW = origErr })
+
+	r := &runner{
+		reused:        true,
+		containerName: "proj-abc123",
+		imageTag:      "claude-bunker:proj-abc123",
+		auth:          container.AuthTokens{OAuthToken: "tok"},
+	}
+	r.planRun("claude", []string{"--model", "opus"})
+
+	out := buf.String()
+	for _, want := range []string{
+		"would reuse running container proj-abc123",
+		"would re-inject auth secrets",
+		"would launch: claude --model opus",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("plan output missing %q; got %q", want, out)
+		}
 	}
 }

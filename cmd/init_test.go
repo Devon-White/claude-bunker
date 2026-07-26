@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/huh"
@@ -106,6 +107,39 @@ func TestWriteDevContainer(t *testing.T) {
 	}
 	if _, ok := loaded.Features["ghcr.io/anthropics/devcontainer-features/claude-code:1"]; ok {
 		t.Error("claude-code feature must be stripped from the engine config on load")
+	}
+}
+
+func TestWriteDevContainer_DryRunPlansWithoutWriting(t *testing.T) {
+	ws := t.TempDir()
+
+	var buf bytes.Buffer
+	origErr := errW
+	errW = &buf
+	t.Cleanup(func() { errW = origErr })
+
+	origDry := dryRun
+	dryRun = true
+	t.Cleanup(func() { dryRun = origDry })
+
+	cfg := config.ProjectConfig{
+		Features: map[string]map[string]interface{}{
+			"ghcr.io/devcontainers/features/node:1": {"version": "20"},
+		},
+	}
+	if err := writeDevContainer(ws, cfg); err != nil {
+		t.Fatalf("writeDevContainer: %v", err)
+	}
+
+	p := devcontainer.DevContainerPath(ws)
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatalf("dry-run must not create %s (stat err = %v)", p, err)
+	}
+	if _, err := os.Stat(filepath.Dir(p)); !os.IsNotExist(err) {
+		t.Errorf("dry-run must not create the .devcontainer directory")
+	}
+	if !strings.Contains(buf.String(), "would write "+p) {
+		t.Errorf("plan output missing %q; got %q", "would write "+p, buf.String())
 	}
 }
 

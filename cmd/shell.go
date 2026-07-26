@@ -13,6 +13,9 @@ var shellCmd = &cobra.Command{
 		// consumes any bare `--` before runInSandbox/extractBunkerFlags runs;
 		// the `--` passthrough terminator is a default-`claude`-run affordance.
 		initVerbosity(cmd)
+		if v, _ := cmd.Flags().GetBool("dry-run"); v {
+			dryRun = true
+		}
 		return runInSandbox(args, "bash")
 	},
 }

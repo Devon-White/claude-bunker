@@ -30,10 +30,12 @@ func init() {
 	pruneCmd.Flags().Bool("force", false, "Skip confirmation prompt")
 	pruneCmd.Flags().Bool("all", false, "Remove all volumes/images without interactive selection")
 	pruneCmd.Flags().Bool("json", false, "Output candidates as JSON (non-interactive; with --force, removes them)")
+	pruneCmd.Flags().Bool("dry-run", false, "Show what would be removed without removing anything")
 }
 
 func runPrune(cmd *cobra.Command, args []string) error {
 	initVerbosity(cmd)
+	dryRun, _ = cmd.Flags().GetBool("dry-run")
 	ctx := context.Background()
 
 	cli, err := dockerClient()
@@ -103,7 +105,7 @@ func pruneResources[T any](ctx context.Context, cli *dockerclient.Client, force,
 
 	var selectedIndices []int
 
-	if all || len(groupLabels) == 1 {
+	if all || dryRun || len(groupLabels) == 1 {
 		for i := range groupLabels {
 			selectedIndices = append(selectedIndices, i)
 		}
@@ -143,6 +145,13 @@ func pruneResources[T any](ctx context.Context, cli *dockerclient.Client, force,
 
 	if len(toRemove) == 0 {
 		info("Nothing to remove.")
+		return nil
+	}
+
+	if dryRun {
+		for _, item := range toRemove {
+			planf("would remove %s %s", spec.resourceName, spec.label(item))
+		}
 		return nil
 	}
 

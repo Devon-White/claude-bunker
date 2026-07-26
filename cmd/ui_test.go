@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,48 @@ func TestDiagnosticsGoToStderr(t *testing.T) {
 		if !bytes.Contains(errb.Bytes(), []byte(want)) {
 			t.Errorf("stderr missing %q; got %q", want, errb.String())
 		}
+	}
+}
+
+func TestPlanAlwaysPrintsIgnoringQuiet(t *testing.T) {
+	var buf bytes.Buffer
+	origErr := errW
+	errW = &buf
+	t.Cleanup(func() { errW = origErr })
+
+	origV := verbosity
+	verbosity = -1 // --quiet: info/warn/success are suppressed, plan must NOT be
+	t.Cleanup(func() { verbosity = origV })
+
+	plan("would do a thing")
+	planf("would remove %s", "widget")
+
+	out := buf.String()
+	if !strings.Contains(out, "would do a thing") {
+		t.Errorf("plan() must print even under --quiet; got %q", out)
+	}
+	if !strings.Contains(out, "would remove widget") {
+		t.Errorf("planf() must print even under --quiet; got %q", out)
+	}
+}
+
+func TestSuccessSuppressedUnderDryRun(t *testing.T) {
+	var buf bytes.Buffer
+	origErr := errW
+	errW = &buf
+	t.Cleanup(func() { errW = origErr })
+
+	origV := verbosity
+	verbosity = 0
+	t.Cleanup(func() { verbosity = origV })
+
+	origDry := dryRun
+	dryRun = true
+	t.Cleanup(func() { dryRun = origDry })
+
+	success("Saved something")
+	if buf.Len() != 0 {
+		t.Errorf("success() must not fire under dryRun; got %q", buf.String())
 	}
 }
 

@@ -55,6 +55,7 @@ so you can toggle items on/off or add new ones.`,
 
 func runInit(cmd *cobra.Command, args []string) error {
 	initVerbosity(cmd)
+	dryRun, _ = cmd.Flags().GetBool("dry-run")
 
 	workspace := resolveWorkspace()
 
@@ -69,10 +70,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Create directory structure
+	// Create directory structure (skipped under dry-run — no host mutation).
 	dir := filepath.Dir(cfgPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		die("Failed to create config directory: " + err.Error())
+	if !dryRun {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			die("Failed to create config directory: " + err.Error())
+		}
 	}
 
 	// Non-interactive: never silently overwrite. Require --defaults to write.
@@ -558,6 +561,10 @@ func writeDevContainer(workspace string, cfg config.ProjectConfig) error {
 		return fmt.Errorf("generating devcontainer.json: %w", err)
 	}
 	p := devcontainer.DevContainerPath(workspace)
+	if dryRun {
+		planf("would write %s", p)
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}

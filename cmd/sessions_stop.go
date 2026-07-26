@@ -20,10 +20,12 @@ var sessionsStopCmd = &cobra.Command{
 func init() {
 	sessionsStopCmd.Flags().BoolP("force", "f", false, "Skip confirmation prompt")
 	sessionsStopCmd.Flags().Bool("remove", false, "Also remove the container after stopping")
+	sessionsStopCmd.Flags().Bool("dry-run", false, "Show what would be stopped/removed without doing it")
 }
 
 func runSessionsStop(cmd *cobra.Command, args []string) error {
 	initVerbosity(cmd)
+	dryRun, _ = cmd.Flags().GetBool("dry-run")
 	ctx := context.Background()
 
 	cli, err := dockerClient()
@@ -49,6 +51,22 @@ func runSessionsStop(cmd *cobra.Command, args []string) error {
 	}
 
 	force, _ := cmd.Flags().GetBool("force")
+	remove, _ := cmd.Flags().GetBool("remove")
+	return stopOrPlan(ctx, mgr, c, force, remove)
+}
+
+// stopOrPlan stops (and optionally removes) a resolved container. Under dryRun it
+// prints the plan and performs no Docker calls or confirmation prompt. The non-dry
+// path is byte-identical to the previous inline implementation.
+func stopOrPlan(ctx context.Context, mgr *sessions.Manager, c sessions.ContainerState, force, remove bool) error {
+	if dryRun {
+		planf("would stop container %s", c.DisplayName)
+		if remove {
+			planf("would remove container %s", c.DisplayName)
+		}
+		return nil
+	}
+
 	if !force {
 		ok, err := confirmAction(fmt.Sprintf("Stop container %s?", c.DisplayName))
 		if err != nil {
@@ -64,13 +82,11 @@ func runSessionsStop(cmd *cobra.Command, args []string) error {
 	}
 	success(fmt.Sprintf("Stopped %s", c.DisplayName))
 
-	remove, _ := cmd.Flags().GetBool("remove")
 	if remove {
 		if err := mgr.RemoveContainer(ctx, c.ID); err != nil {
 			return fmt.Errorf("removing container: %w", err)
 		}
 		success(fmt.Sprintf("Removed %s", c.DisplayName))
 	}
-
 	return nil
 }

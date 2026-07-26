@@ -1,9 +1,14 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+
+	dockerclient "github.com/docker/docker/client"
 
 	"github.com/Devon-White/claude-bunker/internal/container"
 )
@@ -154,5 +159,58 @@ func TestPruneReportJSON(t *testing.T) {
 	// Errors is `omitempty`: an empty report must not emit an "errors" key.
 	if _, ok := back["errors"]; ok {
 		t.Errorf("empty Errors should be omitted, got: %s", data)
+	}
+}
+
+// pruneResources under dryRun must plan every candidate and remove nothing,
+// without prompting. A fake spec records remove() calls; nil cli is never used
+// because list/remove ignore it and the dry-run branch returns before removal.
+func TestPruneResources_DryRunPlansWithoutRemoving(t *testing.T) {
+	var buf bytes.Buffer
+	origErr := errW
+	errW = &buf
+	t.Cleanup(func() { errW = origErr })
+
+	origV := verbosity
+	verbosity = 0
+	t.Cleanup(func() { verbosity = origV })
+
+	origDry := dryRun
+	dryRun = true
+	t.Cleanup(func() { dryRun = origDry })
+
+	var removeCalls []string
+	spec := pruneSpec[string]{
+		resourceName: "image",
+		list: func(_ context.Context, _ *dockerclient.Client) ([]string, error) {
+			return []string{"img-a", "img-b"}, nil
+		},
+		groups: func(items []string) ([]string, [][]string) {
+			labels := make([]string, len(items))
+			grouped := make([][]string, len(items))
+			for i, it := range items {
+				labels[i] = it
+				grouped[i] = []string{it}
+			}
+			return labels, grouped
+		},
+		label: func(s string) string { return s },
+		remove: func(_ context.Context, _ *dockerclient.Client, s string) error {
+			removeCalls = append(removeCalls, s)
+			return nil
+		},
+	}
+
+	if err := pruneResources(context.Background(), nil, false, false, spec); err != nil {
+		t.Fatalf("pruneResources: %v", err)
+	}
+	if len(removeCalls) != 0 {
+		t.Fatalf("dry-run must remove nothing; removed %v", removeCalls)
+	}
+	out := buf.String()
+	for _, want := range []string{"would remove image img-a", "would remove image img-b"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("plan output missing %q; got %q", want, out)
+		}
 	}
 }
