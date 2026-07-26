@@ -74,6 +74,7 @@ func init() {
 	// (--interval is intentionally absent; it is sessions-scoped in Task 5.)
 	rootCmd.Flags().Bool("keep", false, "Keep the container running after exit")
 	rootCmd.Flags().Bool("rebuild", false, "Force a clean image rebuild (clears cache)")
+	rootCmd.Flags().Bool("dry-run", false, "Plan the build/create/launch without performing it")
 	rootCmd.Flags().String("gh-token", "", "GitHub token to inject (overrides config/env)")
 	rootCmd.Flags().String("api-key", "", "Anthropic API key to inject")
 	rootCmd.Flags().String("oauth-token", "", "Claude Code OAuth token to inject")
