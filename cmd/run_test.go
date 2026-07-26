@@ -179,6 +179,38 @@ func TestExtractBunkerFlags(t *testing.T) {
 				remaining: []string{"-p", "do something", "--model", "sonnet"},
 			},
 		},
+		{
+			name: "double-dash terminator forwards the rest verbatim",
+			args: []string{"--verbose", "--", "--keep"},
+			want: bunkerFlags{
+				verbose:   true,
+				remaining: []string{"--keep"},
+			},
+		},
+		{
+			name: "double-dash at start forwards all following args",
+			args: []string{"--", "--model", "opus"},
+			want: bunkerFlags{
+				remaining: []string{"--model", "opus"},
+			},
+		},
+		{
+			name: "double-dash stops bunker interpretation of later tokens",
+			args: []string{"--keep", "--", "--gh-token", "ghp_claude_arg"},
+			want: bunkerFlags{
+				keep:      true,
+				remaining: []string{"--gh-token", "ghp_claude_arg"},
+			},
+		},
+		{
+			// Hardened space form: a credential value that looks like a flag is
+			// rejected. f.err is set; the trailing --verbose is still scanned
+			// (harmless — runInSandbox dies on flags.err before reading verbose).
+			name:    "credential flag followed by another flag is an error",
+			args:    []string{"--gh-token", "--verbose"},
+			want:    bunkerFlags{verbose: true},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -219,6 +251,57 @@ func TestExtractBunkerFlags(t *testing.T) {
 				t.Errorf("noSandbox = %v, want %v", got.noSandbox, tt.want.noSandbox)
 			}
 		})
+	}
+}
+
+func TestRootFlagsRegisteredForHelp(t *testing.T) {
+	// These render only on the --help path (Execute flips DisableFlagParsing=false
+	// before SetArgs(["--help"])). On normal runs parsing stays disabled and
+	// extractBunkerFlags is authoritative — registration here is documentation only.
+	boolFlags := []string{"keep", "rebuild", "force", "no-sandbox", "no-color"}
+	for _, name := range boolFlags {
+		if rootCmd.Flags().Lookup(name) == nil {
+			t.Errorf("root flag --%s not registered for --help documentation", name)
+		}
+	}
+	stringFlags := []string{"gh-token", "api-key", "oauth-token"}
+	for _, name := range stringFlags {
+		f := rootCmd.Flags().Lookup(name)
+		if f == nil {
+			t.Errorf("root flag --%s not registered", name)
+			continue
+		}
+		if f.Value.Type() != "string" {
+			t.Errorf("root flag --%s type = %s, want string", name, f.Value.Type())
+		}
+	}
+	if f := rootCmd.Flags().Lookup("verbose"); f == nil || f.Shorthand != "V" {
+		t.Errorf("root --verbose must register with shorthand -V, got %+v", f)
+	}
+	if f := rootCmd.Flags().Lookup("quiet"); f == nil || f.Shorthand != "q" {
+		t.Errorf("root --quiet must register with shorthand -q, got %+v", f)
+	}
+	// -v stays reserved for --version (handled in Execute); it must NOT be a
+	// verbose shorthand on root.
+	if f := rootCmd.Flags().ShorthandLookup("v"); f != nil {
+		t.Errorf("-v must stay reserved for --version, but resolves to --%s", f.Name)
+	}
+	// --interval belongs to the sessions command (Task 5), not root.
+	if rootCmd.Flags().Lookup("interval") != nil {
+		t.Error("--interval must not be registered on root (sessions-scoped in Task 5)")
+	}
+}
+
+func TestRootUsageDocumentsPassthrough(t *testing.T) {
+	usage := rootCmd.UsageTemplate()
+	if !strings.Contains(usage, "Passthrough:") {
+		t.Error("root usage template must document the Passthrough contract")
+	}
+	if !strings.Contains(usage, "Use -- to force everything after it to claude verbatim") {
+		t.Error("root usage template must explain the -- terminator")
+	}
+	if !strings.Contains(usage, "claude-bunker --keep -- --model opus") {
+		t.Error("root usage template must show a -- passthrough example")
 	}
 }
 

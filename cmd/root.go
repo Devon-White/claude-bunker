@@ -29,6 +29,16 @@ after that). Configuration changes are detected automatically.`,
 	RunE:               runDefault,
 }
 
+// passthroughUsage documents the flag-passthrough contract and the `--`
+// terminator, which cobra cannot infer. It is appended to the default usage
+// template so it renders in `claude-bunker --help` alongside the Flags section.
+const passthroughUsage = `
+Passthrough:
+  Unknown flags are forwarded to claude.
+  Use -- to force everything after it to claude verbatim, e.g.:
+    claude-bunker --keep -- --model opus -p "hi"
+`
+
 func init() {
 	// Re-enable flag parsing for subcommands
 	shellCmd.DisableFlagParsing = false
@@ -51,6 +61,30 @@ func init() {
 	initCmd.Flags().Bool("defaults", false, "Write a default config non-interactively (no prompts)")
 	versionCmd.Flags().Bool("json", false, "Output as JSON")
 	statusCmd.Flags().Bool("json", false, "Output as JSON")
+
+	// Register root's own flags for --help documentation ONLY. Root keeps
+	// DisableFlagParsing:true for normal runs (so unknown claude flags pass
+	// through unmodified), and extractBunkerFlags (cmd/run.go) stays the single
+	// source of truth for these on the run path. They render in
+	// `claude-bunker --help` because Execute() flips DisableFlagParsing=false
+	// before SetArgs(["--help"]). Do NOT read these via rootCmd.Flags() on the
+	// run path — they are zero-valued there because parsing is disabled.
+	// (--interval is intentionally absent; it is sessions-scoped in Task 5.)
+	rootCmd.Flags().Bool("keep", false, "Keep the container running after exit")
+	rootCmd.Flags().Bool("rebuild", false, "Force a clean image rebuild (clears cache)")
+	rootCmd.Flags().String("gh-token", "", "GitHub token to inject (overrides config/env)")
+	rootCmd.Flags().String("api-key", "", "Anthropic API key to inject")
+	rootCmd.Flags().String("oauth-token", "", "Claude Code OAuth token to inject")
+	rootCmd.Flags().BoolP("verbose", "V", false, "Show detailed output")
+	rootCmd.Flags().BoolP("quiet", "q", false, "Suppress informational output")
+	rootCmd.Flags().Bool("force", false, "Override fail-closed safety guards")
+	rootCmd.Flags().Bool("no-sandbox", false, "Launch even if sandbox settings can't be seeded (NOT recommended)")
+	rootCmd.Flags().Bool("no-color", false, "Disable ANSI color output")
+
+	// Document the passthrough / `--` terminator contract, which cobra cannot
+	// infer. Appended to the default usage template so it survives alongside the
+	// auto-generated Flags section on the --help path.
+	rootCmd.SetUsageTemplate(rootCmd.UsageTemplate() + passthroughUsage)
 
 	rootCmd.AddCommand(shellCmd)
 	rootCmd.AddCommand(pruneCmd)

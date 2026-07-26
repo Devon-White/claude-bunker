@@ -142,8 +142,12 @@ type bunkerFlags struct {
 
 // extractBunkerFlags pulls claude-bunker-specific flags from the arg list.
 // Value flags: --gh-token, --api-key, --oauth-token (each takes a non-empty
-// value; a missing or empty value sets f.err).
-// Boolean flags: --verbose, --quiet, --keep, --rebuild, --force, --no-sandbox.
+// value that does not look like a flag; a missing, empty, or flag-looking
+// value sets f.err).
+// Boolean flags: --verbose, --quiet, --keep, --rebuild, --force, --no-sandbox,
+// --no-color.
+// A bare "--" terminates bunker parsing: it is dropped and every token after it
+// is forwarded verbatim in f.remaining.
 // Returns the extracted values and the remaining args to pass through.
 func extractBunkerFlags(args []string) bunkerFlags {
 	var f bunkerFlags
@@ -166,6 +170,15 @@ func extractBunkerFlags(args []string) bunkerFlags {
 	for i < len(args) {
 		arg := args[i]
 
+		// `--` terminator: everything after the first bare `--` is forwarded to
+		// claude/bash verbatim, with no further bunker-flag interpretation. The
+		// `--` itself is dropped. args[i+1:] is a valid empty slice when `--` is
+		// the last token, so `["--"]` alone yields no remaining args.
+		if arg == "--" {
+			f.remaining = append(f.remaining, args[i+1:]...)
+			break
+		}
+
 		// Check boolean flags
 		if dest, ok := boolFlags[arg]; ok {
 			*dest = true
@@ -177,7 +190,7 @@ func extractBunkerFlags(args []string) bunkerFlags {
 		handled := false
 		for flag, dest := range flagMap {
 			if arg == flag {
-				if i+1 < len(args) && args[i+1] != "" {
+				if i+1 < len(args) && args[i+1] != "" && !strings.HasPrefix(args[i+1], "-") {
 					*dest = args[i+1]
 					i += 2
 				} else {
