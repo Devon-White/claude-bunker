@@ -32,15 +32,15 @@ var (
 // --- Styles ---
 
 var (
-	prefixStyle       = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
-	infoMsgStyle      = lipgloss.NewStyle()
-	verboseMsgStyle   = lipgloss.NewStyle().Foreground(colorDim)
-	warnLabelStyle    = lipgloss.NewStyle().Foreground(colorWarn).Bold(true)
-	errorLabelStyle   = lipgloss.NewStyle().Foreground(colorError).Bold(true)
-	successMsgStyle   = lipgloss.NewStyle().Foreground(colorSuccess)
-	dimStyle          = lipgloss.NewStyle().Foreground(colorDim)
-	brandStyle        = lipgloss.NewStyle().Foreground(colorBrand)
-	boldStyle         = lipgloss.NewStyle().Bold(true)
+	prefixStyle        = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
+	infoMsgStyle       = lipgloss.NewStyle()
+	verboseMsgStyle    = lipgloss.NewStyle().Foreground(colorDim)
+	warnLabelStyle     = lipgloss.NewStyle().Foreground(colorWarn).Bold(true)
+	errorLabelStyle    = lipgloss.NewStyle().Foreground(colorError).Bold(true)
+	successMsgStyle    = lipgloss.NewStyle().Foreground(colorSuccess)
+	dimStyle           = lipgloss.NewStyle().Foreground(colorDim)
+	brandStyle         = lipgloss.NewStyle().Foreground(colorBrand)
+	boldStyle          = lipgloss.NewStyle().Bold(true)
 	sectionHeaderStyle = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
 )
 
@@ -49,6 +49,16 @@ var (
 func info(msg string) {
 	if verbosity >= 0 {
 		fmt.Fprintln(errW, prefixStyle.Render("[claude-bunker]"), infoMsgStyle.Render(msg))
+	}
+}
+
+// hint prints a soft, advisory tip to stderr. Like info() it honors the verbosity
+// gate (verbosity >= 0), so --quiet / CLAUDE_BUNKER_QUIET=1 suppress it, and writes
+// to errW so stdout stays clean for piping. The body is dimmed so a hint reads as
+// optional guidance rather than a status line.
+func hint(msg string) {
+	if verbosity >= 0 {
+		fmt.Fprintln(errW, prefixStyle.Render("[claude-bunker]"), dimStyle.Render(msg))
 	}
 }
 

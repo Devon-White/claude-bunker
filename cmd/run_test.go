@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -97,8 +99,8 @@ func TestExtractBunkerFlags(t *testing.T) {
 			name: "mixed bunker and claude flags",
 			args: []string{"--gh-token", "ghp_abc", "--model", "opus", "--verbose", "--print", "hello world"},
 			want: bunkerFlags{
-				auth:    container.AuthTokens{GhToken: "ghp_abc"},
-				verbose: true,
+				auth:      container.AuthTokens{GhToken: "ghp_abc"},
+				verbose:   true,
 				remaining: []string{"--model", "opus", "--print", "hello world"},
 			},
 		},
@@ -165,8 +167,8 @@ func TestExtractBunkerFlags(t *testing.T) {
 			name: "bunker flags interspersed among claude flags",
 			args: []string{"--print", "--gh-token", "ghp_abc", "--model", "opus", "--quiet", "--dangerously-skip-permissions"},
 			want: bunkerFlags{
-				auth:  container.AuthTokens{GhToken: "ghp_abc"},
-				quiet: true,
+				auth:      container.AuthTokens{GhToken: "ghp_abc"},
+				quiet:     true,
 				remaining: []string{"--print", "--model", "opus", "--dangerously-skip-permissions"},
 			},
 		},
@@ -251,5 +253,41 @@ func TestFailClosed_Seed(t *testing.T) {
 	// With --no-sandbox, it is tolerated.
 	if failClosed(seedErr, true, "re-run with --no-sandbox") != nil {
 		t.Error("seed failure with --no-sandbox should be tolerated")
+	}
+}
+
+func TestLoadConfigSetsNoDevcontainer(t *testing.T) {
+	tests := []struct {
+		name               string
+		writeDevcontainer  bool
+		wantNoDevcontainer bool
+	}{
+		{"absent devcontainer.json sets noDevcontainer true", false, true},
+		{"present devcontainer.json sets noDevcontainer false", true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ws := t.TempDir()
+			if tt.writeDevcontainer {
+				dir := filepath.Join(ws, ".devcontainer")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				// "{}" is a valid, minimal devcontainer.json: Parse unmarshals it
+				// into a zero DevContainer with no error, so LoadProjectConfig
+				// returns present == true.
+				if err := os.WriteFile(filepath.Join(dir, "devcontainer.json"), []byte("{}\n"), 0o644); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+			}
+
+			r := &runner{workspace: ws}
+			r.loadConfig(bunkerFlags{})
+
+			if r.noDevcontainer != tt.wantNoDevcontainer {
+				t.Errorf("noDevcontainer = %v, want %v", r.noDevcontainer, tt.wantNoDevcontainer)
+			}
+		})
 	}
 }

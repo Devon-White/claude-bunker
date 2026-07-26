@@ -52,6 +52,10 @@ type runner struct {
 	extraDomains  []string
 	auth          container.AuthTokens
 
+	// noDevcontainer is true when the project has no .devcontainer/devcontainer.json
+	// (LoadProjectConfig reported the file absent). Drives the first-run onboarding hint.
+	noDevcontainer bool
+
 	execID    string              // Docker exec ID from ExecInteractive, used for cleanup session detection
 	reused    bool                // true when attaching to an already-running container with matching fingerprints
 	noCache   bool                // true when --rebuild is used; passed to Docker build as NoCache
@@ -247,6 +251,17 @@ func runInSandbox(passedArgs []string, execCmd string) error {
 	activeRunner = r
 
 	r.loadConfig(flags)
+
+	// First-run onboarding hint: when the project has no .devcontainer/devcontainer.json,
+	// nudge toward `claude-bunker init`. Purely advisory (bunker runs fine on defaults) and
+	// non-blocking. Gated to the default `claude` launch (not `shell`) and printed before any
+	// build/start output. hint() honors verbosity >= 0, so --quiet / CLAUDE_BUNKER_QUIET=1
+	// suppress it. The file's presence is the self-clearing suppression signal — there is no
+	// persisted "seen" flag and no dependence on the transient ~/.cache fingerprint/image state.
+	if execCmd == "claude" && r.noDevcontainer {
+		hint("No .devcontainer/devcontainer.json found — running with defaults. Run 'claude-bunker init' to set up a project config.")
+	}
+
 	r.resolveNaming()
 
 	// Handle --rebuild: force a clean slate
@@ -306,7 +321,8 @@ func failClosed(err error, overridden bool, remediation string) error {
 
 // loadConfig reads project config and resolves auth token precedence.
 func (r *runner) loadConfig(flags bunkerFlags) {
-	cfg, _, err := devcontainer.LoadProjectConfig(r.workspace)
+	cfg, present, err := devcontainer.LoadProjectConfig(r.workspace)
+	r.noDevcontainer = !present
 	if fatal := failClosed(err, flags.force, "Fix .devcontainer/devcontainer.json, or re-run with --force to ignore it."); fatal != nil {
 		die("Failed to parse devcontainer.json: " + fatal.Error())
 	}
