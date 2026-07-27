@@ -1,10 +1,24 @@
 version: 2
 
+before:
+  hooks:
+    - go mod tidy
+    - mkdir -p completions manpages
+    - sh -c 'go run . completion bash > completions/claude-bunker.bash'
+    - sh -c 'go run . completion zsh  > completions/claude-bunker.zsh'
+    - sh -c 'go run . completion fish > completions/claude-bunker.fish'
+    - go run ./cmd/genman manpages
+
 builds:
   - main: .
     binary: claude-bunker
+    env:
+      - CGO_ENABLED=0
     ldflags:
-      - -s -w -X github.com/Devon-White/claude-bunker/cmd.Version={{.Version}}
+      - -s -w
+      - -X github.com/Devon-White/claude-bunker/cmd.Version={{.Version}}
+      - -X github.com/Devon-White/claude-bunker/cmd.Commit={{.Commit}}
+      - -X github.com/Devon-White/claude-bunker/cmd.Date={{.CommitDate}}
     goos:
       - linux
       - darwin
@@ -19,9 +33,35 @@ archives:
       - goos: windows
         formats: ['zip']
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - src: completions/*
+      - src: manpages/*
+      - src: README.md
 
 checksum:
   name_template: "checksums.txt"
+
+brews:
+  - name: claude-bunker
+    repository:
+      owner: Devon-White
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/Devon-White/claude-bunker"
+    description: "Run Claude Code in a hardened, firewalled sandbox container"
+    # license: "MIT"   # uncomment once a LICENSE file exists in the repo root (none today)
+    # skip_upload stays `true` until BOTH prerequisites in "Manual prerequisites"
+    # below are satisfied (tap repo exists + HOMEBREW_TAP_GITHUB_TOKEN secret set).
+    # Flip to `auto` to actually publish (auto still skips prereleases/snapshots).
+    skip_upload: true
+    install: |
+      bin.install "claude-bunker"
+      bash_completion.install "completions/claude-bunker.bash" => "claude-bunker"
+      zsh_completion.install "completions/claude-bunker.zsh" => "_claude-bunker"
+      fish_completion.install "completions/claude-bunker.fish"
+      man1.install Dir["manpages/*.1"]
+    test: |
+      system "#{bin}/claude-bunker", "version"
 
 release:
   prerelease: auto
