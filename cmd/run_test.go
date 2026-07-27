@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Devon-White/claude-bunker/internal/buildlock"
 	"github.com/Devon-White/claude-bunker/internal/container"
 )
 
@@ -415,4 +416,24 @@ func TestPlanRun_ReusePathNoDockerCalls(t *testing.T) {
 			t.Errorf("plan output missing %q; got %q", want, out)
 		}
 	}
+}
+
+func TestReleaseBuildLockIdempotent(t *testing.T) {
+	// releaseBuildLock must be safe when no lock is held (nil field) and when
+	// called more than once — it runs on the success path AND from cleanup().
+	r := &runner{}
+	r.releaseBuildLock() // nil lock — must not panic
+	r.releaseBuildLock() // still nil — must not panic
+
+	t.Setenv("CLAUDE_BUNKER_CACHE_DIR", t.TempDir())
+	l, err := buildlock.Acquire("test-proj")
+	if err != nil {
+		t.Fatalf("Acquire error: %v", err)
+	}
+	r.buildLock = l
+	r.releaseBuildLock() // releases and nils the field
+	if r.buildLock != nil {
+		t.Error("releaseBuildLock must nil the buildLock field")
+	}
+	r.releaseBuildLock() // second call — idempotent, must not panic
 }

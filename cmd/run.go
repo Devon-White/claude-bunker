@@ -16,6 +16,7 @@ import (
 
 	dockerclient "github.com/docker/docker/client"
 
+	"github.com/Devon-White/claude-bunker/internal/buildlock"
 	"github.com/Devon-White/claude-bunker/internal/config"
 	"github.com/Devon-White/claude-bunker/internal/container"
 	"github.com/Devon-White/claude-bunker/internal/devcontainer"
@@ -71,12 +72,17 @@ type runner struct {
 	// Cached build artifacts from resolveContainer, passed to BuildImage to avoid recomputation.
 	cachedDockerfile string
 	cachedScripts    []container.BuildContextFile
+
+	// buildLock is held only across the build/create critical section and
+	// released before exec (the interactive session must never hold it).
+	buildLock *buildlock.Lock
 }
 
 // cleanup stops and removes the container. Safe to call multiple times
 // and from any goroutine (signal handlers, normal exit, die()).
 func (r *runner) cleanup() {
 	platform.RestoreSaved()
+	r.releaseBuildLock() // unconditional: build-time die()->dieCode->cleanup lands here while teardown is still false
 
 	r.mu.Lock()
 	if r.cleanedUp || !r.teardown || r.containerID == "" {
@@ -111,6 +117,20 @@ func (r *runner) cleanup() {
 	// in one operation; the Docker daemon handles cleanup async.
 	info("Stopping sandbox...")
 	_ = exec.Command("docker", "rm", "-f", cID).Start()
+}
+
+// releaseBuildLock releases the build/create lock if held. It is idempotent and
+// safe to call from the success path, cleanup(), and the signal handler. The
+// field is read and nil'd under r.mu, then Release() runs OUTSIDE r.mu so it
+// never deadlocks with cleanup()'s own r.mu.
+func (r *runner) releaseBuildLock() {
+	r.mu.Lock()
+	l := r.buildLock
+	r.buildLock = nil
+	r.mu.Unlock()
+	if l != nil {
+		l.Release()
+	}
 }
 
 // resolveWorkspace determines the workspace directory from env or cwd.
@@ -321,7 +341,24 @@ func runInSandbox(passedArgs []string, execCmd string) error {
 	}
 
 	if r.containerID == "" {
-		r.buildAndCreate()
+		lock, err := buildlock.Acquire(r.containerName)
+		if err != nil {
+			die("Could not acquire build lock: " + err.Error())
+		}
+		r.mu.Lock()
+		r.buildLock = lock
+		r.mu.Unlock()
+
+		// Re-probe UNDER the lock: while we waited, a concurrent invocation may
+		// have built the image and created the container. resolveContainer is
+		// idempotent (read-only Docker probes + fingerprint recompute); a
+		// now-running matching container flips r.reused=true and sets
+		// r.containerID, so we skip buildAndCreate entirely — closing the TOCTOU.
+		r.resolveContainer()
+		if r.containerID == "" {
+			r.buildAndCreate()
+		}
+		r.releaseBuildLock() // success path: release BEFORE exec
 	}
 
 	r.registerCleanup(!flags.keep)
