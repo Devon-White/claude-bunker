@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [ master ]
+    tags: [ "v*" ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu is the required floor. macos-latest is included because the
+        # full suite is green on darwin (go test ./... exits 0, verified
+        # 2026-07-27; the older internal/sessions socket-path failure no longer
+        # reproduces). windows is intentionally omitted: the TTY/resize code is
+        # build-tagged (*_windows.go) and windows cross-compilation is already
+        # exercised by the build job's `goreleaser build --snapshot`.
+        os: [ ubuntu-latest, macos-latest ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: go test
+        run: go test ./... -count=1
+
+  build:
+    # Exercises the REAL .goreleaser.yml across all 6 os/arch targets, including
+    # Task 3's before-hooks (cmd/genman man-page generation + shell completions).
+    # DEPENDS ON Task 3: `goreleaser build` runs the before-hooks, so cmd/genman
+    # must exist or this job fails at the hook step.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: GoReleaser build (snapshot)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: build --snapshot --clean
+
+  # ---------------------------------------------------------------------------
+  # DEFERRED (follow-up task): §6.6 integration smoke build (privileged Docker).
+  # Not enabled here because it asserts the unlanded user-apt fix in
+  # internal/container/generate.go and needs --cap-add=NET_ADMIN. GitHub
+  # ubuntu-latest runners ship Docker and permit NET_ADMIN, so it IS runnable
+  # in-CI once the fix lands. Keep it tag-only (slow + privileged). Shape:
+  #
+  # smoke:
+  #   runs-on: ubuntu-latest
+  #   if: github.ref_type == 'tag'
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-go@v5
+  #       with:
+  #         go-version-file: go.mod
+  #     - run: go build -o claude-bunker .
+  #     # fixture .claude/.claude-bunker/config.json declares a USER apt package (e.g. jq)
+  #     - run: ./claude-bunker --dump-dockerfile build-context
+  #     - run: docker build -t bunker-smoke build-context
+  #     - run: |
+  #         docker run --rm --cap-add=NET_ADMIN --cap-add=NET_RAW bunker-smoke \
+  #           bash -c 'command -v jq && /usr/local/bin/init-firewall.sh'
+  #   # Asserts (a) the user apt package installed (guards the §6.6 apt-lists bug)
+  #   # and (b) init-firewall.sh self-test passes (FirewallScriptPath =
+  #   # /usr/local/bin/init-firewall.sh, per internal/container/constants.go).
+  # ---------------------------------------------------------------------------
