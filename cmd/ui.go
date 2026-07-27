@@ -227,5 +227,9 @@ func confirmAction(title string) (bool, error) {
 // --- Version renderer ---
 
 func renderVersion(version string) string {
-	return brandStyle.Render("claude-bunker") + " " + boldStyle.Render(version)
+	s := brandStyle.Render("claude-bunker") + " " + boldStyle.Render(version)
+	if Commit != "none" || Date != "unknown" {
+		s += dimStyle.Render(fmt.Sprintf(" (%s, %s)", Commit, Date))
+	}
+	return s
 }

@@ -11,8 +11,16 @@ import (
 	"github.com/Devon-White/claude-bunker/internal/container"
 )
 
-// Version is set via ldflags at build time.
-var Version = "dev"
+// Version, Commit, and Date are set via ldflags at build time.
+var (
+	Version = "dev"
+	Commit  = "none"
+	Date    = "unknown"
+)
+
+// RootCmd returns the root command. Exported so out-of-package tools
+// (cmd/genman man-page generation) can traverse the command tree.
+func RootCmd() *cobra.Command { return rootCmd }
 
 var rootCmd = &cobra.Command{
 	Use:   "claude-bunker [flags]",
@@ -125,7 +133,9 @@ var versionCmd = &cobra.Command{
 
 // renderVersionJSON renders the version as a minimal JSON object.
 func renderVersionJSON(version string) string {
-	return `{"version":` + strconv.Quote(version) + `}`
+	return `{"version":` + strconv.Quote(version) +
+		`,"commit":` + strconv.Quote(Commit) +
+		`,"date":` + strconv.Quote(Date) + `}`
 }
 
 // Execute runs the root command.
