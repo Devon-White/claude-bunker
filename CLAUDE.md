@@ -52,7 +52,6 @@ Releases are built by goreleaser (`.goreleaser.yml`) for linux/darwin/windows on
 - **`.devcontainer/devcontainer.json`** — the single project config. Standard devcontainer keys at top level (features, containerEnv, onCreateCommand, postStartCommand, capAdd, remoteUser); bunker extras under `customizations["claude-bunker"]` (exclude, allowDomains, plugins, ghToken, seedHistory, workspace). Parsed by `internal/devcontainer`. OS packages are NOT a bunker extra — they're expressed via the standard `ghcr.io/rocker-org/devcontainer-features/apt-packages:1` feature in the top-level `features` map, a normal user feature that bunker resolves and VS Code/Codespaces honor the same way. A deprecation warning fires if a config still has the old `customizations["claude-bunker"].apt` key.
 - **`.devcontainer/devcontainer-lock.json`** — pins feature digests (reproducible builds); digests fold into the image fingerprint.
 - Enforcement of Claude Code behavior is a runtime read-only `/etc/claude-code/managed-settings.json` (written each start); host `settings.json`/`settings.local.json` are NOT injected.
-- Legacy `internal/config/project.go` `LoadProjectConfig`/`ConfigPath` (`.claude/.claude-bunker/config.json`) still exist but have no live caller — dead code, optionally removable.
 
 ### Five Security Layers
 
