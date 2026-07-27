@@ -62,9 +62,6 @@ Run `claude-bunker init` to generate it interactively (or `claude-bunker init --
       "allowDomains": [
         "registry.npmjs.org"
       ],
-      "apt": [
-        "ripgrep"
-      ],
       "plugins": "project"
     }
   },
@@ -72,6 +69,9 @@ Run `claude-bunker init` to generate it interactively (or `claude-bunker init --
     "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
     "ghcr.io/devcontainers/features/node:1": {
       "version": "22"
+    },
+    "ghcr.io/rocker-org/devcontainer-features/apt-packages:1": {
+      "packages": "ripgrep"
     }
   },
   "image": "mcr.microsoft.com/devcontainers/base:debian",
@@ -98,13 +98,26 @@ Run `claude-bunker init` to generate it interactively (or `claude-bunker init --
 |-----|---------|
 | `exclude` | Paths hidden inside the container via tmpfs overlays (genuinely invisible, not permission-blocked). |
 | `allowDomains` | Extra domains added to both the iptables firewall and the sandbox network allowlist, alongside the builtins. |
-| `apt` | Extra apt packages installed into the image. |
 | `plugins` | MCP/plugin seeding level: `project` (workspace `.mcp.json`), `user` (+ `~/.claude.json` and plugin cache), or `all` (+ enterprise `managed-mcp.json`). |
 | `ghToken` | GitHub token for git operations inside the sandbox. See [GitHub access](#github-access-git-push-from-container) below. |
 | `seedHistory` | Whether to seed host session history into the container so `--resume` works (default `true`). |
 | `workspace` | Subdirectory to start Claude in (the full repo is still mounted at `/workspace`). |
 
 Values support `$VAR`, `${VAR}`, and `${VAR:-default}` expansion against your host environment (evaluated each run, not baked into the committed file).
+
+### Adding OS packages
+
+Extra OS packages go through the standard [`apt-packages`](https://github.com/rocker-org/devcontainer-features/tree/main/src/apt-packages) devcontainer feature, in the top-level `features` map:
+
+```jsonc
+"features": {
+  "ghcr.io/rocker-org/devcontainer-features/apt-packages:1": { "packages": "jq,ripgrep" }
+}
+```
+
+This is portable — the same entry installs the packages in claude-bunker **and** in VS Code / Codespaces, since it's a standard feature rather than a bunker-only key. `claude-bunker init` writes it for you when you list packages to install.
+
+Do **not** install OS packages via `onCreateCommand`/`postCreateCommand` — those aren't layer-cached the way features are, so the install re-runs on every image build. Reserve lifecycle commands for project setup that depends on your source (`npm install`, codegen), not for packages.
 
 **Trust boundary:** `onCreateCommand` and `postStartCommand` come from the repo you're running in, so a malicious devcontainer.json can run arbitrary commands at build/start time — this is the standard devcontainer trust model (VS Code has the same issue, since it reads the same file). Review a project's `.devcontainer/devcontainer.json` before running claude-bunker on an untrusted repo; the firewall limits the blast radius of anything it runs.
 
@@ -381,45 +394,36 @@ Useful tmux bindings:
 
 ### Adding tools to the container
 
-There are three ways to add tools, from simplest to most flexible:
+There are two ways to add tools, from simplest to most flexible:
 
-**1. apt packages** -- for system libraries and simple tools:
-
-```json
-{
-  "customizations": {
-    "claude-bunker": {
-      "apt": ["python3", "python3-pip", "ripgrep", "libsqlite3-dev"]
-    }
-  }
-}
-```
-
-**2. Devcontainer features** -- for language runtimes and complex toolchains:
+**1. Devcontainer features** -- for language runtimes, toolchains, and system packages:
 
 ```json
 {
   "features": {
     "ghcr.io/devcontainers/features/go:1": { "version": "1.22" },
     "ghcr.io/devcontainers/features/node:1": { "version": "20" },
-    "ghcr.io/devcontainers/features/rust:1": {}
+    "ghcr.io/devcontainers/features/rust:1": {},
+    "ghcr.io/rocker-org/devcontainer-features/apt-packages:1": {
+      "packages": "ffmpeg,libssl-dev"
+    }
   }
 }
 ```
 
-Features are OCI packages from the [devcontainer features registry](https://containers.dev/features). Each feature bundles an `install.sh` script that handles version management, PATH setup, and dependencies. Browse the registry to find the feature reference for your toolchain -- the key is the full OCI image reference and the value is an object of options (check each feature's documentation for available options).
+Features are OCI packages from the [devcontainer features registry](https://containers.dev/features). Each feature bundles an `install.sh` script that handles version management, PATH setup, and dependencies. Browse the registry to find the feature reference for your toolchain -- the key is the full OCI image reference and the value is an object of options (check each feature's documentation for available options). Plain apt packages (system libraries, simple CLI tools) go through the standard `apt-packages` feature -- see [Adding OS packages](#adding-os-packages) above.
 
 Features are installed in dependency order during image build. The image is cached, so subsequent runs skip installation. Resolved feature digests are recorded in `.devcontainer/devcontainer-lock.json` (committed alongside `devcontainer.json`).
 
-**3. postStartCommand** -- for project-specific setup that depends on your source code:
+**2. postStartCommand** -- for project-specific setup that depends on your source code:
 
 ```json
 { "postStartCommand": "pip install -r requirements.txt && npm install" }
 ```
 
-This runs after the container starts, every time. Use it for installing project dependencies, not for installing tools (those belong in `apt` or `features` so they're cached in the image).
+This runs after the container starts, every time. Use it for installing project dependencies, not for installing tools (those belong in `features` so they're cached in the image).
 
-**Choosing between them:** Use `apt` for system packages (`ffmpeg`, `libssl-dev`). Use `features` for language runtimes and toolchains (`go`, `node`, `rust`, `python`). Use `postStartCommand` for project dependency installation (`npm install`, `pip install`). All three can be combined in the same `devcontainer.json`.
+**Choosing between them:** Use `features` for language runtimes, toolchains, and system packages (`go`, `node`, `rust`, `python`, or the `apt-packages` feature for things like `ffmpeg`/`libssl-dev`). Use `postStartCommand` for project dependency installation (`npm install`, `pip install`). Both can be combined in the same `devcontainer.json`.
 
 ### Adding allowed domains
 

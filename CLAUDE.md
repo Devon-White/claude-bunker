@@ -49,7 +49,7 @@ Releases are built by goreleaser (`.goreleaser.yml`) for linux/darwin/windows on
 
 ### Config
 
-- **`.devcontainer/devcontainer.json`** — the single project config. Standard devcontainer keys at top level (features, containerEnv, onCreateCommand, postStartCommand, capAdd, remoteUser); bunker extras under `customizations["claude-bunker"]` (exclude, allowDomains, apt, plugins, ghToken, seedHistory, workspace). Parsed by `internal/devcontainer`.
+- **`.devcontainer/devcontainer.json`** — the single project config. Standard devcontainer keys at top level (features, containerEnv, onCreateCommand, postStartCommand, capAdd, remoteUser); bunker extras under `customizations["claude-bunker"]` (exclude, allowDomains, plugins, ghToken, seedHistory, workspace). Parsed by `internal/devcontainer`. OS packages are NOT a bunker extra — they're expressed via the standard `ghcr.io/rocker-org/devcontainer-features/apt-packages:1` feature in the top-level `features` map, a normal user feature that bunker resolves and VS Code/Codespaces honor the same way. A deprecation warning fires if a config still has the old `customizations["claude-bunker"].apt` key.
 - **`.devcontainer/devcontainer-lock.json`** — pins feature digests (reproducible builds); digests fold into the image fingerprint.
 - Enforcement of Claude Code behavior is a runtime read-only `/etc/claude-code/managed-settings.json` (written each start); host `settings.json`/`settings.local.json` are NOT injected.
 - Legacy `internal/config/project.go` `LoadProjectConfig`/`ConfigPath` (`.claude/.claude-bunker/config.json`) still exist but have no live caller — dead code, optionally removable.
@@ -68,7 +68,7 @@ Auth tokens are injected via tmpfs at `/run/secrets/`, never as environment vari
 
 ### Fingerprinting & Caching
 
-The public API is `CompareFingerprints(BuildInput, containerName) FingerprintResult` (unexported `imageFingerprint`/`containerFingerprint` do the hashing). The image fingerprint covers version + Dockerfile + scripts + apt + features + env + onCreateCommand **plus resolved feature digests from `devcontainer-lock.json`**; the container fingerprint covers domains + workspace + excludes + postStartCommand + plugins + seedHistory. Reproducible mod times (`2025-01-01T00:00:00Z`) ensure Docker layer cache hits.
+The public API is `CompareFingerprints(BuildInput, containerName) FingerprintResult` (unexported `imageFingerprint`/`containerFingerprint` do the hashing). The image fingerprint covers version + Dockerfile + scripts + features + env + onCreateCommand **plus resolved feature digests from `devcontainer-lock.json`** (this is also how OS packages now factor in, since they're expressed as a feature); the container fingerprint covers domains + workspace + excludes + postStartCommand + plugins + seedHistory. Reproducible mod times (`2025-01-01T00:00:00Z`) ensure Docker layer cache hits.
 
 ## Conventions
 
