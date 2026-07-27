@@ -19,7 +19,6 @@ type ProjectConfig struct {
 	Exclude          []string                  `json:"exclude"`
 	AllowDomains     []string                  `json:"allowDomains"`
 	Features         map[string]map[string]any `json:"features"`
-	Apt              []string                  `json:"apt"`
 	Env              map[string]string         `json:"env"`
 	OnCreateCommand  string                    `json:"onCreateCommand"`
 	PostStartCommand string                    `json:"postStartCommand"`
@@ -67,9 +66,9 @@ func (c ProjectConfig) ShouldSeedHistory() bool {
 }
 
 // HasGeneratedLayers returns true if the config requires generating
-// additional Dockerfile layers (features, apt packages, or env vars).
+// additional Dockerfile layers (features or env vars).
 func (c ProjectConfig) HasGeneratedLayers() bool {
-	return len(c.Features) > 0 || len(c.Apt) > 0 || len(c.Env) > 0 || c.OnCreateCommand != ""
+	return len(c.Features) > 0 || len(c.Env) > 0 || c.OnCreateCommand != ""
 }
 
 // LoadProjectConfig reads .claude/.claude-bunker/config.json from the workspace.

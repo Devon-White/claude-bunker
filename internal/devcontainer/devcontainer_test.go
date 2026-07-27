@@ -1,6 +1,11 @@
 package devcontainer
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	bunkerlog "github.com/Devon-White/claude-bunker/internal/log"
+)
 
 func TestParseAndToProjectConfig(t *testing.T) {
 	in := `{
@@ -16,7 +21,6 @@ func TestParseAndToProjectConfig(t *testing.T) {
     "claude-bunker": {
       "exclude": ["secrets/"],
       "allowDomains": ["registry.npmjs.org"],
-      "apt": ["ripgrep"],
       "plugins": "project",
       "seedHistory": false,
       "workspace": "./packages/api"
@@ -50,9 +54,6 @@ func TestParseAndToProjectConfig(t *testing.T) {
 	if len(cfg.AllowDomains) != 1 || cfg.AllowDomains[0] != "registry.npmjs.org" {
 		t.Errorf("allowDomains = %+v", cfg.AllowDomains)
 	}
-	if len(cfg.Apt) != 1 || cfg.Apt[0] != "ripgrep" {
-		t.Errorf("apt = %+v", cfg.Apt)
-	}
 	if cfg.Plugins != "project" {
 		t.Errorf("plugins = %q", cfg.Plugins)
 	}
@@ -61,6 +62,34 @@ func TestParseAndToProjectConfig(t *testing.T) {
 	}
 	if cfg.Workspace != "./packages/api" {
 		t.Errorf("workspace = %q", cfg.Workspace)
+	}
+}
+
+// TestBunkerExtras_WarnsOnLegacyAptField covers the courtesy deprecation
+// notice: a pre-existing devcontainer.json with the removed bunker-specific
+// "apt" field must still parse without error (no silent data loss/crash) and
+// must emit exactly one warning pointing at the replacement feature.
+func TestBunkerExtras_WarnsOnLegacyAptField(t *testing.T) {
+	var got string
+	orig := bunkerlog.WarnFunc
+	bunkerlog.WarnFunc = func(msg string) { got = msg }
+	t.Cleanup(func() { bunkerlog.WarnFunc = orig })
+
+	in := `{"customizations":{"claude-bunker":{"apt":["ripgrep"]}}}`
+	dc, err := Parse([]byte(in), nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	cfg := ToProjectConfig(dc) // must not panic on the legacy field
+
+	if got == "" {
+		t.Fatal("expected a deprecation warning when the legacy field is present")
+	}
+	if !strings.Contains(got, "apt-packages") {
+		t.Errorf("warning should point at the replacement feature: %q", got)
+	}
+	if len(cfg.Exclude) != 0 {
+		t.Errorf("unrelated fields should be unaffected: %+v", cfg)
 	}
 }
 

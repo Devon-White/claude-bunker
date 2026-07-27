@@ -22,7 +22,7 @@ type BuildInput struct {
 
 // imageFingerprint computes a SHA-256 hash of all inputs that affect the Docker
 // image build: the claude-bunker version, the generated Dockerfile, embedded
-// scripts, apt packages, features config, and user env vars baked into the image.
+// scripts, features config, and user env vars baked into the image.
 func imageFingerprint(b BuildInput) string {
 	h := sha256.New()
 
@@ -44,9 +44,6 @@ func imageFingerprint(b BuildInput) string {
 		h.Write([]byte("script:" + name + ":"))
 		h.Write(b.Scripts[name])
 	}
-
-	// Hash apt packages (sorted, since they affect the image)
-	hashSortedSlice(h, "apt:", b.ProjectCfg.Apt)
 
 	// Hash features config (affects image layers)
 	if len(b.ProjectCfg.Features) > 0 {

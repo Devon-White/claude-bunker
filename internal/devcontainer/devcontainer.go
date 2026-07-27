@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Devon-White/claude-bunker/internal/config"
+	bunkerlog "github.com/Devon-White/claude-bunker/internal/log"
 )
 
 // bunkerUser is the forced non-root container user.
@@ -36,7 +37,6 @@ type DevContainer struct {
 type bunkerCustomizations struct {
 	Exclude      []string `json:"exclude,omitempty"`
 	AllowDomains []string `json:"allowDomains,omitempty"`
-	Apt          []string `json:"apt,omitempty"`
 	Plugins      string   `json:"plugins,omitempty"`
 	GhToken      string   `json:"ghToken,omitempty"`
 	SeedHistory  *bool    `json:"seedHistory,omitempty"`
@@ -58,6 +58,19 @@ func (dc DevContainer) bunkerExtras() bunkerCustomizations {
 	var bc bunkerCustomizations
 	if raw, ok := dc.Customizations[bunkerCustomizationsKey]; ok {
 		_ = json.Unmarshal(raw, &bc)
+
+		// Courtesy deprecation notice: the bunker-specific "apt" field was
+		// replaced by the standard apt-packages feature (portable to VS
+		// Code/Codespaces, which ignore customizations namespaces). Warn
+		// instead of silently dropping packages from pre-existing configs.
+		var legacy map[string]json.RawMessage
+		if json.Unmarshal(raw, &legacy) == nil {
+			if _, ok := legacy["apt"]; ok {
+				bunkerlog.Warn(`the "apt" field is deprecated; add packages via the ` +
+					`apt-packages feature ("ghcr.io/rocker-org/devcontainer-features/apt-packages:1") ` +
+					`and re-run 'claude-bunker init'`)
+			}
+		}
 	}
 	return bc
 }
@@ -83,7 +96,6 @@ func ToProjectConfig(dc DevContainer) config.ProjectConfig {
 		Exclude:          bc.Exclude,
 		AllowDomains:     bc.AllowDomains,
 		Features:         features,
-		Apt:              bc.Apt,
 		Env:              dc.ContainerEnv,
 		OnCreateCommand:  commandToString(dc.OnCreateCommand),
 		PostStartCommand: commandToString(dc.PostStartCommand),

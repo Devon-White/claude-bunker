@@ -56,18 +56,27 @@ func TestImageFingerprint_ChangesOnScriptChange(t *testing.T) {
 	}
 }
 
-func TestImageFingerprint_ChangesOnAptPackages(t *testing.T) {
+// TestImageFingerprint_ChangesOnFeaturesConfig covers plain Features-map
+// changes (independent of FeatureDigests, covered separately). Extra apt
+// packages are now expressed as a Features entry (the standard apt-packages
+// feature), so this is also the regression test for that path invalidating
+// the image cache.
+func TestImageFingerprint_ChangesOnFeaturesConfig(t *testing.T) {
 	dockerfile := "FROM debian:bookworm-slim"
 	scripts := map[string][]byte{}
 
-	cfg1 := ProjectConfig{Apt: []string{"vim"}}
-	cfg2 := ProjectConfig{Apt: []string{"vim", "curl"}}
+	cfg1 := ProjectConfig{Features: map[string]map[string]any{
+		"ghcr.io/rocker-org/devcontainer-features/apt-packages:1": {"packages": "vim"},
+	}}
+	cfg2 := ProjectConfig{Features: map[string]map[string]any{
+		"ghcr.io/rocker-org/devcontainer-features/apt-packages:1": {"packages": "vim,curl"},
+	}}
 
 	fp1 := imageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg1})
 	fp2 := imageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, Scripts: scripts, ProjectCfg: cfg2})
 
 	if fp1 == fp2 {
-		t.Error("fingerprint should change when apt packages change")
+		t.Error("fingerprint should change when a feature's options change")
 	}
 }
 

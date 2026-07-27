@@ -7,11 +7,6 @@ import (
 	"strings"
 )
 
-// validAptPkg matches valid Debian package names: alphanumeric, plus, minus,
-// dots, and colons (for arch-qualified names like libc6:amd64). Rejects
-// shell metacharacters to prevent command injection via config.json apt field.
-var validAptPkg = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.+\-:]+$`)
-
 // validEnvKey matches valid environment variable names per POSIX: starts with
 // letter or underscore, followed by letters, digits, or underscores.
 var validEnvKey = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
@@ -23,13 +18,12 @@ var validFeatureID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_\-]*$`)
 type DockerfileOpts struct {
 	BaseDockerfile  string
 	Features        []ResolvedFeature
-	AptPackages     []string
 	UserEnv         map[string]string
 	OnCreateCommand string
 }
 
-// GenerateDockerfile appends apt packages, feature install layers, and user
-// env vars to the base Dockerfile. The generated Dockerfile always ends with
+// GenerateDockerfile appends feature install layers and user env vars to the
+// base Dockerfile. The generated Dockerfile always ends with
 // USER claude-bunker to ensure the container runs as the unprivileged user.
 //
 // Feature layers follow the devcontainer spec: containerEnv is emitted as ENV
@@ -40,31 +34,9 @@ func GenerateDockerfile(opts DockerfileOpts) (string, error) {
 	var b strings.Builder
 	b.WriteString(opts.BaseDockerfile)
 
-	hasLayers := len(opts.Features) > 0 || len(opts.AptPackages) > 0 || len(opts.UserEnv) > 0 || opts.OnCreateCommand != ""
+	hasLayers := len(opts.Features) > 0 || len(opts.UserEnv) > 0 || opts.OnCreateCommand != ""
 	if hasLayers {
 		b.WriteString("\n\n# --- claude-bunker: generated layers ---\n")
-	}
-
-	// Apt packages layer (runs before features so features can depend on them)
-	if len(opts.AptPackages) > 0 {
-		sorted := make([]string, len(opts.AptPackages))
-		copy(sorted, opts.AptPackages)
-		sort.Strings(sorted)
-		for _, pkg := range sorted {
-			if !validAptPkg.MatchString(pkg) {
-				return "", fmt.Errorf("invalid apt package name %q: must match %s", pkg, validAptPkg.String())
-			}
-		}
-		b.WriteString("\n# Apt packages\n")
-		b.WriteString("USER root\n")
-		// Always refresh the package lists in this layer: the base image cleans
-		// /var/lib/apt/lists/* after its own installs (standard hygiene), so the
-		// lists are absent here even when the base ran apt-get update earlier.
-		b.WriteString("RUN apt-get update && apt-get install -y --no-install-recommends \\\n")
-		for _, pkg := range sorted {
-			b.WriteString(fmt.Sprintf("  %s \\\n", pkg))
-		}
-		b.WriteString("  && apt-get clean && rm -rf /var/lib/apt/lists/*\n")
 	}
 
 	// Append feature install layers

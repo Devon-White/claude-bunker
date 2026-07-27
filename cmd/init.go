@@ -287,6 +287,13 @@ const (
 	settingHooks    = "hooks"
 )
 
+// aptPackagesFeatureRef is the standard community devcontainer feature used to
+// express extra apt packages. Unlike the old bunker-specific "apt" field, this
+// is a normal user feature: VS Code/Codespaces install it directly, and
+// claude-bunker resolves + installs it like any other feature (it is not in
+// bunkerManagedFeaturePrefixes, so it is preserved in the committed file).
+const aptPackagesFeatureRef = "ghcr.io/rocker-org/devcontainer-features/apt-packages:1"
+
 // initSettingsFromConfig builds pre-populated initSettings from an existing config.
 // It also returns which setting sections should be pre-enabled.
 func initSettingsFromConfig(existing *config.ProjectConfig) (initSettings, []string) {
@@ -325,10 +332,22 @@ func initSettingsFromConfig(existing *config.ProjectConfig) (initSettings, []str
 		s.plugins = existing.Plugins
 	}
 
-	// Packages
-	if len(existing.Apt) > 0 {
-		enabled = append(enabled, settingPackages)
-		s.aptPackages = strings.Join(existing.Apt, " ")
+	// Packages: pre-populate from the standard apt-packages feature entry
+	// (comma-separated in the feature option; space-separated in the wizard).
+	if opts, ok := existing.Features[aptPackagesFeatureRef]; ok {
+		if raw, ok := opts["packages"].(string); ok && raw != "" {
+			var pkgs []string
+			for p := range strings.SplitSeq(raw, ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					pkgs = append(pkgs, p)
+				}
+			}
+			if len(pkgs) > 0 {
+				enabled = append(enabled, settingPackages)
+				s.aptPackages = strings.Join(pkgs, " ")
+			}
+		}
 	}
 
 	// Env
@@ -512,7 +531,14 @@ func mergeSettings(cfg map[string]any, s initSettings) {
 
 	if s.aptPackages != "" {
 		if pkgs := strings.Fields(s.aptPackages); len(pkgs) > 0 {
-			cfg["apt"] = pkgs
+			feats, _ := cfg["features"].(map[string]any)
+			if feats == nil {
+				feats = map[string]any{}
+			}
+			feats[aptPackagesFeatureRef] = map[string]any{
+				"packages": strings.Join(pkgs, ","),
+			}
+			cfg["features"] = feats
 		}
 	}
 

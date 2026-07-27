@@ -59,7 +59,6 @@ func TestExpandProjectConfig(t *testing.T) {
 	t.Setenv("CB_TOKEN", "ghp_secret123")
 	t.Setenv("CB_DOMAIN", "registry.example.com")
 	t.Setenv("CB_PY_VER", "3.12")
-	t.Setenv("CB_EXTRA_PKG", "jq")
 
 	cfg := ProjectConfig{
 		Workspace:        "${CB_WORKSPACE:-src}",
@@ -67,7 +66,6 @@ func TestExpandProjectConfig(t *testing.T) {
 		GhToken:          "${CB_TOKEN}",
 		Exclude:          []string{"${CB_EXCL:-secrets/}"},
 		AllowDomains:     []string{"${CB_DOMAIN}"},
-		Apt:              []string{"curl", "$CB_EXTRA_PKG"},
 		Env:              map[string]string{"API_KEY": "${CB_TOKEN}"},
 		Features: map[string]map[string]any{
 			"python": {"version": "${CB_PY_VER}", "count": 3.0},
@@ -90,9 +88,6 @@ func TestExpandProjectConfig(t *testing.T) {
 	}
 	if len(cfg.AllowDomains) != 1 || cfg.AllowDomains[0] != "registry.example.com" {
 		t.Errorf("AllowDomains = %v, want [registry.example.com]", cfg.AllowDomains)
-	}
-	if len(cfg.Apt) != 2 || cfg.Apt[0] != "curl" || cfg.Apt[1] != "jq" {
-		t.Errorf("Apt = %v, want [curl jq]", cfg.Apt)
 	}
 	if cfg.Env["API_KEY"] != "ghp_secret123" {
 		t.Errorf("Env[API_KEY] = %q, want %q", cfg.Env["API_KEY"], "ghp_secret123")

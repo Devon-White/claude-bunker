@@ -51,7 +51,7 @@ func TestRunInit_NonTTYWithoutDefaultsLeavesFileUntouched(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	original := []byte(`{"customizations":{"claude-bunker":{"apt":["ripgrep"]}}}` + "\n")
+	original := []byte(`{"customizations":{"claude-bunker":{"plugins":"project"}}}` + "\n")
 	if err := os.WriteFile(cfgPath, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -140,6 +140,61 @@ func TestWriteDevContainer_DryRunPlansWithoutWriting(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "would write "+p) {
 		t.Errorf("plan output missing %q; got %q", "would write "+p, buf.String())
+	}
+}
+
+// TestMergeSettings_AptPackagesBecomeStandardFeature locks in the portability
+// fix: the wizard must express extra apt packages via the standard
+// apt-packages devcontainer feature (which VS Code/Codespaces and bunker both
+// resolve), not the old bunker-specific "apt" field (which only claude-bunker
+// ever read — customizations namespaces are ignored by the VS Code path).
+func TestMergeSettings_AptPackagesBecomeStandardFeature(t *testing.T) {
+	cfg := map[string]any{}
+	s := initSettings{aptPackages: "jq ripgrep"}
+	mergeSettings(cfg, s)
+
+	feats, ok := cfg["features"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected a features map; cfg=%v", cfg)
+	}
+	entry, ok := feats[aptPackagesFeatureRef]
+	if !ok {
+		t.Fatalf("expected apt-packages feature entry; features=%v", feats)
+	}
+	opts, ok := entry.(map[string]any)
+	if !ok {
+		t.Fatalf("feature entry must be a map, got %T", entry)
+	}
+	if got := opts["packages"]; got != "jq,ripgrep" {
+		t.Errorf("packages option = %v, want %q", got, "jq,ripgrep")
+	}
+	// And no bunker-specific apt field:
+	if _, exists := cfg["apt"]; exists {
+		t.Error(`generated config must not contain a bunker "apt" field`)
+	}
+}
+
+// TestInitSettingsFromConfig_ReadsAptPackagesFromFeature verifies the
+// pre-populate path reads packages back from the standard feature entry
+// (comma-separated) into the wizard's space-separated field.
+func TestInitSettingsFromConfig_ReadsAptPackagesFromFeature(t *testing.T) {
+	existing := &config.ProjectConfig{
+		Features: map[string]map[string]any{
+			aptPackagesFeatureRef: {"packages": "jq,ripgrep"},
+		},
+	}
+	s, enabled := initSettingsFromConfig(existing)
+	if s.aptPackages != "jq ripgrep" {
+		t.Errorf("aptPackages = %q, want %q", s.aptPackages, "jq ripgrep")
+	}
+	found := false
+	for _, e := range enabled {
+		if e == settingPackages {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("settingPackages should be enabled when the apt-packages feature is present; enabled=%v", enabled)
 	}
 }
 

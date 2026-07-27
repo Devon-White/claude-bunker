@@ -96,7 +96,6 @@ func BuildImage(ctx context.Context, cli *client.Client, opts BuildImageOpts) er
 	var err error
 	genOpts := DockerfileOpts{
 		Features:        features,
-		AptPackages:     opts.ProjectCfg.Apt,
 		UserEnv:         opts.ProjectCfg.Env,
 		OnCreateCommand: opts.ProjectCfg.OnCreateCommand,
 	}

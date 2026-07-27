@@ -176,7 +176,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 // printResolvedConfig shows non-empty project config fields.
 func printResolvedConfig(cfg config.ProjectConfig) {
-	hasConfig := len(cfg.Apt) > 0 || len(cfg.Features) > 0 || len(cfg.Env) > 0 ||
+	hasConfig := len(cfg.Features) > 0 || len(cfg.Env) > 0 ||
 		len(cfg.AllowDomains) > 0 || cfg.PostStartCommand != "" ||
 		cfg.Workspace != "" || len(cfg.Exclude) > 0
 	if !hasConfig {
@@ -185,9 +185,6 @@ func printResolvedConfig(cfg config.ProjectConfig) {
 
 	fmt.Println()
 	fmt.Println(sectionHeaderStyle.Render("Config:"))
-	if len(cfg.Apt) > 0 {
-		fmt.Println(configLine("apt:", strings.Join(cfg.Apt, ", ")))
-	}
 	if len(cfg.Features) > 0 {
 		names := make([]string, 0, len(cfg.Features))
 		for name := range cfg.Features {

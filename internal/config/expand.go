@@ -92,7 +92,7 @@ func isNameCont(c byte) bool {
 //
 // Fields that support $VAR / ${VAR} / ${VAR:-default} expansion:
 //   - Workspace, OnCreateCommand, PostStartCommand, GhToken, Plugins (scalar strings)
-//   - Exclude, AllowDomains, Apt (string slice elements)
+//   - Exclude, AllowDomains (string slice elements)
 //   - Env values (map values only, not keys)
 //   - Features option values (string values only, not feature keys or option keys)
 //
@@ -112,9 +112,6 @@ func expandProjectConfig(cfg *ProjectConfig) {
 	}
 	for i, v := range cfg.AllowDomains {
 		cfg.AllowDomains[i] = expandEnvVars(v)
-	}
-	for i, v := range cfg.Apt {
-		cfg.Apt[i] = expandEnvVars(v)
 	}
 	for k, v := range cfg.Env {
 		cfg.Env[k] = expandEnvVars(v)

@@ -21,28 +21,6 @@ func TestGenerateDockerfile_NoLayers(t *testing.T) {
 	}
 }
 
-func TestGenerateDockerfile_AptPackages(t *testing.T) {
-	base := "FROM debian:bookworm-slim"
-	got, err := GenerateDockerfile(DockerfileOpts{BaseDockerfile: base, AptPackages: []string{"vim", "curl", "git"}})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !strings.Contains(got, "# Apt packages") {
-		t.Error("missing apt packages header")
-	}
-	if !strings.Contains(got, "apt-get install") {
-		t.Error("missing apt-get install command")
-	}
-	// Packages should be sorted
-	curlIdx := strings.Index(got, "curl")
-	gitIdx := strings.Index(got, "git")
-	vimIdx := strings.Index(got, "vim")
-	if curlIdx > gitIdx || gitIdx > vimIdx {
-		t.Error("apt packages should be sorted alphabetically")
-	}
-}
-
 func TestGenerateDockerfile_UserEnv(t *testing.T) {
 	base := "FROM debian:bookworm-slim"
 	env := map[string]string{
@@ -176,28 +154,12 @@ func TestGenerateDockerfile_OnCreateCommandEmpty(t *testing.T) {
 
 func TestGenerateDockerfile_EndsWithUser(t *testing.T) {
 	base := "FROM debian:bookworm-slim"
-	got, err := GenerateDockerfile(DockerfileOpts{BaseDockerfile: base, AptPackages: []string{"vim"}, UserEnv: map[string]string{"A": "1"}})
+	got, err := GenerateDockerfile(DockerfileOpts{BaseDockerfile: base, UserEnv: map[string]string{"A": "1"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	trimmed := strings.TrimSpace(got)
 	if !strings.HasSuffix(trimmed, "USER "+ContainerUser) {
 		t.Errorf("Dockerfile should end with USER %s, got:\n%s", ContainerUser, got)
-	}
-}
-
-func TestGenerateDockerfile_AptAlwaysUpdates(t *testing.T) {
-	// A base that runs its own apt-get update AND cleans the lists (standard
-	// image hygiene). The generated apt layer must still run apt-get update,
-	// because the lists were removed by the base layer.
-	base := "FROM debian:bookworm-slim\nRUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*"
-	got, err := GenerateDockerfile(DockerfileOpts{BaseDockerfile: base, AptPackages: []string{"ripgrep"}})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// The GENERATED apt layer (after the base) must contain "apt-get update && apt-get install".
-	genLayer := got[len(base):]
-	if !strings.Contains(genLayer, "apt-get update && apt-get install") {
-		t.Errorf("generated apt layer must run apt-get update before install; got:\n%s", genLayer)
 	}
 }

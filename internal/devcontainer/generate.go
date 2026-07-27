@@ -69,9 +69,6 @@ func Generate(cfg config.ProjectConfig, opts GenerateOpts) ([]byte, error) {
 	if len(cfg.AllowDomains) > 0 {
 		bc["allowDomains"] = cfg.AllowDomains
 	}
-	if len(cfg.Apt) > 0 {
-		bc["apt"] = cfg.Apt
-	}
 	if cfg.Plugins != "" {
 		bc["plugins"] = cfg.Plugins
 	}
