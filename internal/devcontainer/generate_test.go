@@ -2,6 +2,7 @@ package devcontainer
 
 import (
 	"bytes"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -81,5 +82,85 @@ func TestGenerate_KeepsEnvRefGhToken(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "${GH_TOKEN}") {
 		t.Error("a ${VAR} ghToken reference should be preserved")
+	}
+}
+
+// TestGenerate_FirewallHardeningFeaturesAndRunArgs locks in VS Code
+// portability: when FirewallFeature/HardeningFeature are set, both refs land
+// in the features map (firewall carrying the allowDomains option so VS Code
+// gets the same allowlist), and runArgs carries the seccomp profile flag so
+// VS Code applies the same custom seccomp profile bunker uses natively.
+func TestGenerate_FirewallHardeningFeaturesAndRunArgs(t *testing.T) {
+	cfg := config.ProjectConfig{
+		AllowDomains: []string{"registry.npmjs.org", "github.com"},
+	}
+	data, err := Generate(cfg, GenerateOpts{
+		FirewallFeature:  "ghcr.io/Devon-White/claude-bunker/firewall:0",
+		HardeningFeature: "ghcr.io/Devon-White/claude-bunker/hardening:0",
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	// Strip the leading GENERATED marker line before decoding as plain JSON.
+	body := data
+	if nl := bytes.IndexByte(body, '\n'); nl >= 0 {
+		body = body[nl+1:]
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("generated file is not valid JSON: %v", err)
+	}
+
+	features, ok := raw["features"].(map[string]any)
+	if !ok {
+		t.Fatalf("features missing or wrong type: %+v", raw["features"])
+	}
+	fw, ok := features["ghcr.io/Devon-White/claude-bunker/firewall:0"].(map[string]any)
+	if !ok {
+		t.Fatalf("firewall feature ref missing: %+v", features)
+	}
+	if fw["allowDomains"] != "registry.npmjs.org,github.com" {
+		t.Errorf("firewall allowDomains = %v, want joined allowlist", fw["allowDomains"])
+	}
+	if _, ok := features["ghcr.io/Devon-White/claude-bunker/hardening:0"]; !ok {
+		t.Errorf("hardening feature ref missing: %+v", features)
+	}
+
+	runArgs, ok := raw["runArgs"].([]any)
+	if !ok {
+		t.Fatalf("runArgs missing or wrong type: %+v", raw["runArgs"])
+	}
+	want := []any{"--security-opt", "seccomp=${localWorkspaceFolder}/.devcontainer/seccomp.json"}
+	if len(runArgs) != len(want) || runArgs[0] != want[0] || runArgs[1] != want[1] {
+		t.Errorf("runArgs = %+v, want %+v", runArgs, want)
+	}
+}
+
+// TestGenerate_FirewallFeatureNoAllowDomains confirms the firewall feature's
+// options object is empty (not carrying an empty-string allowDomains) when no
+// allowlist is configured, matching the "only include the option if
+// AllowDomains is non-empty" rule.
+func TestGenerate_FirewallFeatureNoAllowDomains(t *testing.T) {
+	data, err := Generate(config.ProjectConfig{}, GenerateOpts{
+		FirewallFeature: "ghcr.io/Devon-White/claude-bunker/firewall:0",
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	dc, err := Parse(data, nil)
+	if err != nil {
+		t.Fatalf("generated file does not re-parse: %v", err)
+	}
+	opts, ok := dc.Features["ghcr.io/Devon-White/claude-bunker/firewall:0"]
+	if !ok {
+		t.Fatalf("firewall feature ref missing: %+v", dc.Features)
+	}
+	m, ok := opts.(map[string]any)
+	if !ok {
+		t.Fatalf("firewall feature options wrong type: %+v", opts)
+	}
+	if _, present := m["allowDomains"]; present {
+		t.Errorf("allowDomains should be omitted when AllowDomains is empty, got %+v", m)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/huh"
 
 	"github.com/Devon-White/claude-bunker/internal/config"
+	"github.com/Devon-White/claude-bunker/internal/container"
 	"github.com/Devon-White/claude-bunker/internal/devcontainer"
 )
 
@@ -107,6 +108,48 @@ func TestWriteDevContainer(t *testing.T) {
 	}
 	if _, ok := loaded.Features["ghcr.io/anthropics/devcontainer-features/claude-code:1"]; ok {
 		t.Error("claude-code feature must be stripped from the engine config on load")
+	}
+	if _, ok := loaded.Features["ghcr.io/Devon-White/claude-bunker/firewall:0"]; ok {
+		t.Error("firewall feature must be stripped from the engine config on load")
+	}
+	if _, ok := loaded.Features["ghcr.io/Devon-White/claude-bunker/hardening:0"]; ok {
+		t.Error("hardening feature must be stripped from the engine config on load")
+	}
+}
+
+// TestWriteDevContainer_WritesSeccompProfile locks in VS Code portability: a
+// sibling .devcontainer/seccomp.json must be written alongside
+// devcontainer.json, sourced from container.SeccompProfileJSON() (the single
+// source of truth also used for bunker's native container creation) — never
+// a hardcoded/duplicated profile.
+func TestWriteDevContainer_WritesSeccompProfile(t *testing.T) {
+	ws := t.TempDir()
+	if err := writeDevContainer(ws, config.ProjectConfig{}); err != nil {
+		t.Fatalf("writeDevContainer: %v", err)
+	}
+	p := filepath.Join(ws, ".devcontainer", "seccomp.json")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("seccomp.json missing: %v", err)
+	}
+	if string(data) != container.SeccompProfileJSON() {
+		t.Errorf("seccomp.json content diverges from container.SeccompProfileJSON()")
+	}
+
+	// The devcontainer.json must reference the seccomp.json via runArgs, and
+	// list the firewall/hardening OCI feature refs (for VS Code/Codespaces).
+	dcData, err := os.ReadFile(filepath.Join(ws, ".devcontainer", "devcontainer.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(dcData, []byte("seccomp=${localWorkspaceFolder}/.devcontainer/seccomp.json")) {
+		t.Error("devcontainer.json missing runArgs seccomp reference")
+	}
+	if !bytes.Contains(dcData, []byte("ghcr.io/Devon-White/claude-bunker/firewall:0")) {
+		t.Error("devcontainer.json missing firewall feature ref")
+	}
+	if !bytes.Contains(dcData, []byte("ghcr.io/Devon-White/claude-bunker/hardening:0")) {
+		t.Error("devcontainer.json missing hardening feature ref")
 	}
 }
 

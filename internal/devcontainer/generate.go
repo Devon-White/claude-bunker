@@ -17,7 +17,26 @@ type GenerateOpts struct {
 	Name              string
 	Image             string
 	ClaudeCodeFeature string // OCI ref for the claude-code feature; "" to omit
+	FirewallFeature   string // OCI ref for the firewall feature; "" to omit
+	HardeningFeature  string // OCI ref for the hardening feature; "" to omit
 }
+
+// seccompRunArgs is the docker runArgs pair that applies the portable
+// .devcontainer/seccomp.json (see container.SeccompProfileJSON, the single
+// source of truth also used for bunker's native container creation) via
+// VS Code / Codespaces.
+//
+// runArgs entries are opaque Docker CLI args: the devcontainer CLI does NOT
+// resolve relative paths inside them against the devcontainer.json folder —
+// it substitutes known ${...} variables textually, then execs `docker run`
+// from its own process cwd (not necessarily the workspace). A bare relative
+// path like "./.devcontainer/seccomp.json" is a known footgun (see
+// devcontainers/cli#210, devcontainers/features#207 — relative seccomp paths
+// don't resolve). ${localWorkspaceFolder} is the spec-documented substitution
+// for exactly this case (mirrors the spec's own
+// `--env-file ${localWorkspaceFolder}/.devcontainer/.env` example) and
+// expands to an absolute host path before docker ever sees the arg.
+var seccompRunArgs = []string{"--security-opt", "seccomp=${localWorkspaceFolder}/.devcontainer/seccomp.json"}
 
 // isEnvRef reports whether s is an environment-variable reference (${VAR} or $VAR)
 // rather than a literal value. Literal secrets must not be written to the
@@ -35,6 +54,16 @@ func Generate(cfg config.ProjectConfig, opts GenerateOpts) ([]byte, error) {
 	if opts.ClaudeCodeFeature != "" {
 		features[opts.ClaudeCodeFeature] = map[string]any{}
 	}
+	if opts.FirewallFeature != "" {
+		fw := map[string]any{}
+		if len(cfg.AllowDomains) > 0 {
+			fw["allowDomains"] = strings.Join(cfg.AllowDomains, ",")
+		}
+		features[opts.FirewallFeature] = fw
+	}
+	if opts.HardeningFeature != "" {
+		features[opts.HardeningFeature] = map[string]any{}
+	}
 	for ref, o := range cfg.Features {
 		features[ref] = o
 	}
@@ -42,6 +71,7 @@ func Generate(cfg config.ProjectConfig, opts GenerateOpts) ([]byte, error) {
 	dc := map[string]any{
 		"capAdd":     forcedCaps,
 		"remoteUser": bunkerUser,
+		"runArgs":    seccompRunArgs,
 	}
 	if opts.Name != "" {
 		dc["name"] = opts.Name

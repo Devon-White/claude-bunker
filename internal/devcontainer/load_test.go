@@ -82,3 +82,44 @@ func TestLoadProjectConfig(t *testing.T) {
 		t.Errorf("plugins = %q", cfg.Plugins)
 	}
 }
+
+// TestLoadProjectConfig_StripsFirewallHardeningAndIgnoresRunArgs proves there
+// is no double-apply between bunker's native firewall/seccomp/apparmor and
+// the portable devcontainer.json Generate now emits: a file that references
+// both the firewall and hardening features AND carries a runArgs seccomp
+// flag must (a) parse without error — DevContainer has no runArgs field, so
+// the key is silently ignored — and (b) have both features stripped from the
+// engine's ProjectConfig, since bunker applies them natively via
+// internal/container rather than resolving the OCI features itself.
+func TestLoadProjectConfig_StripsFirewallHardeningAndIgnoresRunArgs(t *testing.T) {
+	ws := t.TempDir()
+	dir := filepath.Join(ws, ".devcontainer")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{
+  "features": {
+    "ghcr.io/Devon-White/claude-bunker/firewall:0": {"allowDomains": "github.com"},
+    "ghcr.io/Devon-White/claude-bunker/hardening:0": {},
+    "ghcr.io/devcontainers/features/node:1": {"version": "20"}
+  },
+  "runArgs": ["--security-opt", "seccomp=${localWorkspaceFolder}/.devcontainer/seccomp.json"]
+}`
+	if err := os.WriteFile(filepath.Join(dir, "devcontainer.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, found, err := LoadProjectConfig(ws)
+	if err != nil || !found {
+		t.Fatalf("present devcontainer.json with runArgs: found=%v err=%v", found, err)
+	}
+	if _, ok := cfg.Features["ghcr.io/Devon-White/claude-bunker/firewall:0"]; ok {
+		t.Error("firewall feature must be stripped from the engine config (bunker applies it natively)")
+	}
+	if _, ok := cfg.Features["ghcr.io/Devon-White/claude-bunker/hardening:0"]; ok {
+		t.Error("hardening feature must be stripped from the engine config (bunker applies it natively)")
+	}
+	if _, ok := cfg.Features["ghcr.io/devcontainers/features/node:1"]; !ok {
+		t.Error("user feature must survive")
+	}
+}

@@ -582,6 +582,8 @@ func writeDevContainer(workspace string, cfg config.ProjectConfig) error {
 		Name:              name,
 		Image:             "mcr.microsoft.com/devcontainers/base:debian",
 		ClaudeCodeFeature: "ghcr.io/anthropics/devcontainer-features/claude-code:1",
+		FirewallFeature:   "ghcr.io/Devon-White/claude-bunker/firewall:0",
+		HardeningFeature:  "ghcr.io/Devon-White/claude-bunker/hardening:0",
 	})
 	if err != nil {
 		return fmt.Errorf("generating devcontainer.json: %w", err)
@@ -598,6 +600,16 @@ func writeDevContainer(workspace string, cfg config.ProjectConfig) error {
 		return err
 	}
 	success("Saved " + p)
+
+	// Sibling seccomp.json for the portable (VS Code/Codespaces) path,
+	// referenced by devcontainer.json's runArgs above. Sourced from
+	// container.SeccompProfileJSON(), the single profile also used for
+	// bunker's own native container creation.
+	seccompPath := filepath.Join(filepath.Dir(p), "seccomp.json")
+	if err := os.WriteFile(seccompPath, []byte(container.SeccompProfileJSON()), 0o644); err != nil {
+		return fmt.Errorf("writing seccomp.json: %w", err)
+	}
+	success("Saved " + seccompPath)
 	return nil
 }
 
