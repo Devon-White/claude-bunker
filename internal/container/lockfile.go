@@ -91,3 +91,28 @@ func buildLockFile(refToDigest, refToVersion map[string]string) LockFile {
 	}
 	return l
 }
+
+// writeMergedLock loads the existing lock, overlays the freshly-resolved
+// feature digests/versions, and saves — so entries for features present in
+// the committed devcontainer.json but not resolved this run (e.g.
+// bunker-managed features like claude-code that are stripped before bunker's
+// own feature resolution) are preserved for VS Code/Codespaces instead of
+// being dropped by a wholesale overwrite. On a genuine re-resolve (e.g.
+// --rebuild), the freshly-resolved entry for a given ref still wins, since
+// it's overlaid last — only entries not resolved this run are preserved
+// as-is.
+func writeMergedLock(workspace string, refToDigest, refToVersion map[string]string) error {
+	existing, _ := LoadLockFile(workspace)
+	merged := buildLockFile(refToDigest, refToVersion) // fresh entries
+	if len(existing.Features) > 0 {
+		out := make(map[string]LockedFeature, len(existing.Features)+len(merged.Features))
+		for ref, lf := range existing.Features {
+			out[ref] = lf // base = existing (preserved)
+		}
+		for ref, lf := range merged.Features {
+			out[ref] = lf // fresh wins on conflict
+		}
+		merged.Features = out
+	}
+	return merged.Save(workspace)
+}

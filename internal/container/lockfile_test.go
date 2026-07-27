@@ -117,3 +117,84 @@ func TestBuildLockFile_SkipsEmptyDigest(t *testing.T) {
 		t.Error("good feature must be present")
 	}
 }
+
+// TestResolveFeatures_LockPreservesStrippedEntries proves the merge-aware
+// writer preserves lock entries for features present in the committed
+// devcontainer.json but not resolved this run — e.g. bunker-managed features
+// (claude-code, and future firewall/hardening) that are stripped before
+// bunker's own feature resolution. VS Code/Codespaces still need those pinned
+// digests, so a wholesale overwrite (the old bug) must not drop them.
+func TestResolveFeatures_LockPreservesStrippedEntries(t *testing.T) {
+	ws := t.TempDir()
+
+	// Seed an existing lock with a bunker-managed feature entry VS Code needs.
+	seed := LockFile{Features: map[string]LockedFeature{
+		"ghcr.io/anthropics/devcontainer-features/claude-code:1": {
+			Version:   "1.0.0",
+			Resolved:  "ghcr.io/anthropics/devcontainer-features/claude-code@sha256:abc",
+			Integrity: "sha256:abc",
+		},
+	}}
+	if err := seed.Save(ws); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the lock write for a run that resolved only a user feature
+	// (claude-code was stripped before resolution, so it's absent here).
+	refToDigest := map[string]string{"ghcr.io/rocker-org/devcontainer-features/apt-packages:1": "sha256:def"}
+	refToVersion := map[string]string{"ghcr.io/rocker-org/devcontainer-features/apt-packages:1": "1.2.0"}
+	if err := writeMergedLock(ws, refToDigest, refToVersion); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadLockFile(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.Features["ghcr.io/anthropics/devcontainer-features/claude-code:1"]; !ok {
+		t.Error("claude-code lock entry must be PRESERVED (VS Code needs it), not dropped")
+	}
+	if _, ok := got.Features["ghcr.io/rocker-org/devcontainer-features/apt-packages:1"]; !ok {
+		t.Error("newly-resolved apt-packages entry must be present")
+	}
+	if len(got.Features) != 2 {
+		t.Errorf("expected exactly 2 entries after merge, got %d: %+v", len(got.Features), got.Features)
+	}
+}
+
+// TestWriteMergedLock_FreshWinsOnConflict proves that when a feature is
+// re-resolved (e.g. via --rebuild), the freshly-resolved digest overwrites
+// the stale locked entry rather than the old one winning — otherwise
+// --rebuild would never actually update pinned digests.
+func TestWriteMergedLock_FreshWinsOnConflict(t *testing.T) {
+	ws := t.TempDir()
+
+	ref := "ghcr.io/devcontainers/features/node:1"
+	seed := LockFile{Features: map[string]LockedFeature{
+		ref: {Version: "1.0.0", Resolved: ref + "@sha256:old", Integrity: "sha256:old"},
+	}}
+	if err := seed.Save(ws); err != nil {
+		t.Fatal(err)
+	}
+
+	refToDigest := map[string]string{ref: "sha256:new"}
+	refToVersion := map[string]string{ref: "2.0.0"}
+	if err := writeMergedLock(ws, refToDigest, refToVersion); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadLockFile(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, ok := got.Features[ref]
+	if !ok {
+		t.Fatal("re-resolved feature must still be present")
+	}
+	if f.Integrity != "sha256:new" {
+		t.Errorf("integrity = %q, want fresh digest sha256:new (rebuild must update it)", f.Integrity)
+	}
+	if f.Version != "2.0.0" {
+		t.Errorf("version = %q, want fresh version 2.0.0", f.Version)
+	}
+}

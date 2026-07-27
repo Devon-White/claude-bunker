@@ -184,7 +184,10 @@ func ResolveFeatures(features map[string]map[string]any, workspace string, noCac
 
 	// Write the updated lock (best-effort) keyed by the original config map
 	// key, so it matches what the user wrote in config. Done sequentially
-	// here — after g.Wait() — to avoid concurrent writes.
+	// here — after g.Wait() — to avoid concurrent writes. writeMergedLock
+	// merges with the existing lock rather than overwriting it, so entries
+	// for features stripped before resolution (e.g. bunker-managed
+	// claude-code) are preserved for VS Code/Codespaces.
 	refToDigest := make(map[string]string, len(names))
 	refToVersion := make(map[string]string, len(names))
 	for i, name := range names {
@@ -194,7 +197,7 @@ func ResolveFeatures(features map[string]map[string]any, workspace string, noCac
 		refToDigest[name] = resolved[i].Digest
 		refToVersion[name] = resolved[i].Version
 	}
-	if err := buildLockFile(refToDigest, refToVersion).Save(workspace); err != nil {
+	if err := writeMergedLock(workspace, refToDigest, refToVersion); err != nil {
 		log.Warnf("writing devcontainer-lock.json: %v", err)
 	}
 
