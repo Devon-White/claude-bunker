@@ -213,7 +213,7 @@ func runBuild(ctx context.Context, cli *client.Client, imageTag string, tarBuf *
 
 // ImageExists checks if the given image tag exists locally.
 func ImageExists(ctx context.Context, cli *client.Client, imageTag string) bool {
-	_, _, err := cli.ImageInspectWithRaw(ctx, imageTag)
+	_, err := cli.ImageInspect(ctx, imageTag)
 	return err == nil
 }
 

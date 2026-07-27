@@ -92,7 +92,7 @@ func gatherStatus(ctx context.Context, cli *client.Client, workspace string) (st
 	}
 
 	// Image info
-	imgInspect, _, err := cli.ImageInspectWithRaw(ctx, imageTag)
+	imgInspect, err := cli.ImageInspect(ctx, imageTag)
 	if err == nil {
 		created, err := time.Parse(time.RFC3339Nano, imgInspect.Created)
 		if err == nil {
