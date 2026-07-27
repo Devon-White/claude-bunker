@@ -65,8 +65,8 @@ func TestParseAndToProjectConfig(t *testing.T) {
 }
 
 func TestToProjectConfig_FeatureShorthand(t *testing.T) {
-	dc := DevContainer{Features: map[string]interface{}{
-		"ghcr.io/x/enabled:1":  map[string]interface{}{"version": "1"},
+	dc := DevContainer{Features: map[string]any{
+		"ghcr.io/x/enabled:1":  map[string]any{"version": "1"},
 		"ghcr.io/x/disabled:1": false,
 		"ghcr.io/x/bare:1":     true,
 	}}

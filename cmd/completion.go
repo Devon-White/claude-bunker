@@ -24,8 +24,8 @@ To load completions:
 
   powershell:
     claude-bunker completion powershell | Out-String | Invoke-Expression`,
-	ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
-	Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
+	ValidArgs: []string{"bash", "zsh", "fish", "powershell"},
+	Args:      cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
 	// Note: root.go init() sets DisableFlagParsing=false for all subcommands.
 	DisableFlagsInUseLine: true,
 	RunE: func(cmd *cobra.Command, args []string) error {

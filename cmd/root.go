@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 
 	"github.com/spf13/cobra"
@@ -129,13 +130,7 @@ func renderVersionJSON(version string) string {
 
 // Execute runs the root command.
 func Execute() error {
-	noColor := false
-	for _, a := range os.Args[1:] {
-		if a == "--no-color" {
-			noColor = true
-			break
-		}
-	}
+	noColor := slices.Contains(os.Args[1:], "--no-color")
 	applyColorProfile(noColor)
 
 	// Intercept help flags before cobra sees them (since flag parsing is disabled on root)
@@ -145,13 +140,7 @@ func Execute() error {
 			rootCmd.DisableFlagParsing = false
 			rootCmd.SetArgs([]string{"--help"})
 		case "version", "--version", "-v":
-			hasJSON := false
-			for _, a := range os.Args[2:] {
-				if a == "--json" {
-					hasJSON = true
-					break
-				}
-			}
+			hasJSON := slices.Contains(os.Args[2:], "--json")
 			if !hasJSON {
 				fmt.Println(renderVersion(Version))
 				os.Exit(0)

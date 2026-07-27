@@ -12,7 +12,7 @@ import (
 // Volume and image name prefixes. Used by naming functions to construct names
 // and by volume/image listing to discover claude-bunker resources.
 const (
-	BashHistoryVolumePrefix = "claude-code-bashhistory-"
+	BashHistoryVolumePrefix  = "claude-code-bashhistory-"
 	ClaudeConfigVolumePrefix = "claude-code-config-"
 	ImagePrefix              = "claude-bunker"
 )

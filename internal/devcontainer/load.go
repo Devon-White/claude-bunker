@@ -27,8 +27,8 @@ func DevContainerPath(workspace string) string {
 
 // stripBunkerFeatures removes bunker-managed features from a features map,
 // returning a new map. User features are preserved.
-func stripBunkerFeatures(features map[string]map[string]interface{}) map[string]map[string]interface{} {
-	out := make(map[string]map[string]interface{}, len(features))
+func stripBunkerFeatures(features map[string]map[string]any) map[string]map[string]any {
+	out := make(map[string]map[string]any, len(features))
 	for ref, opts := range features {
 		managed := false
 		for _, p := range bunkerManagedFeaturePrefixes {

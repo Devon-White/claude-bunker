@@ -15,7 +15,7 @@ func TestStatusInfoJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var back map[string]interface{}
+	var back map[string]any
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Fatal(err)
 	}

@@ -109,15 +109,15 @@ func writeManagedSettings(ctx context.Context, cli *client.Client, opts SeedOpts
 	domains = append(domains, container.SandboxExtraDomains()...)
 	domains = append(domains, opts.ExtraDomains...)
 
-	settings := map[string]interface{}{
-		"sandbox": map[string]interface{}{
+	settings := map[string]any{
+		"sandbox": map[string]any{
 			"enabled":                   true,
 			"allowUnsandboxedCommands":  false,
 			"enableWeakerNestedSandbox": true,
 			"writableRoots": []string{
 				container.ContainerHome + "/.cache",
 			},
-			"network": map[string]interface{}{
+			"network": map[string]any{
 				"allowedDomains": domains,
 			},
 		},

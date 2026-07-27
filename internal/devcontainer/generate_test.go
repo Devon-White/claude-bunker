@@ -14,7 +14,7 @@ func TestGenerate(t *testing.T) {
 	cfg := config.ProjectConfig{
 		Exclude:      []string{"secrets/"},
 		AllowDomains: []string{"registry.npmjs.org"},
-		Features:     map[string]map[string]interface{}{"ghcr.io/devcontainers/features/node:1": {"version": "20"}},
+		Features:     map[string]map[string]any{"ghcr.io/devcontainers/features/node:1": {"version": "20"}},
 		Env:          map[string]string{"NODE_ENV": "development"},
 		SeedHistory:  &seed,
 	}

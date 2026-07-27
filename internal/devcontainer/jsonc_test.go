@@ -25,7 +25,7 @@ func TestPreprocess(t *testing.T) {
 }`
 	got := preprocess([]byte(in), env)
 
-	var m map[string]interface{}
+	var m map[string]any
 	if err := json.Unmarshal(got, &m); err != nil {
 		t.Fatalf("preprocessed output is not valid JSON: %v\n%s", err, got)
 	}
@@ -47,7 +47,7 @@ func TestPreprocess(t *testing.T) {
 	if m["withDefault"] != "fallback" {
 		t.Errorf("localEnv default not used: %v", m["withDefault"])
 	}
-	arr, _ := m["arr"].([]interface{})
+	arr, _ := m["arr"].([]any)
 	if len(arr) != 3 {
 		t.Errorf("trailing comma handling broke array: %v", m["arr"])
 	}
@@ -66,18 +66,18 @@ func TestPreprocess_NilEnv(t *testing.T) {
 
 func TestPreprocess_CommaInString(t *testing.T) {
 	got := preprocess([]byte(`{"a": "x,]", "b": ["**/*.{js,ts,}"], "c": [1, 2,]}`), nil)
-	var m map[string]interface{}
+	var m map[string]any
 	if err := json.Unmarshal(got, &m); err != nil {
 		t.Fatalf("not valid JSON: %v\n%s", err, got)
 	}
 	if m["a"] != "x,]" {
 		t.Errorf("comma-in-string corrupted: %v", m["a"])
 	}
-	arr, _ := m["b"].([]interface{})
+	arr, _ := m["b"].([]any)
 	if len(arr) != 1 || arr[0] != "**/*.{js,ts,}" {
 		t.Errorf("glob-brace comma corrupted: %v", m["b"])
 	}
-	c, _ := m["c"].([]interface{})
+	c, _ := m["c"].([]any)
 	if len(c) != 2 {
 		t.Errorf("real trailing comma not removed: %v", m["c"])
 	}

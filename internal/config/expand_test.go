@@ -69,7 +69,7 @@ func TestExpandProjectConfig(t *testing.T) {
 		AllowDomains:     []string{"${CB_DOMAIN}"},
 		Apt:              []string{"curl", "$CB_EXTRA_PKG"},
 		Env:              map[string]string{"API_KEY": "${CB_TOKEN}"},
-		Features: map[string]map[string]interface{}{
+		Features: map[string]map[string]any{
 			"python": {"version": "${CB_PY_VER}", "count": 3.0},
 		},
 	}

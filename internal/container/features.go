@@ -24,14 +24,14 @@ import (
 
 // ResolvedFeature holds a downloaded and extracted devcontainer feature.
 type ResolvedFeature struct {
-	ID            string                 // feature identifier (e.g. "python")
-	Source        string                 // full OCI reference
-	InstallDir    string                 // temp dir containing install.sh
-	Options       map[string]interface{} // effective options: feature defaults merged under user-specified values
-	Env           map[string]string      // feature's containerEnv from metadata
-	InstallsAfter []string               // OCI refs this feature should install after
-	Digest        string                 // resolved OCI digest (sha256:...) pulled for this feature
-	Version       string                 // feature version reported by devcontainer-feature.json
+	ID            string            // feature identifier (e.g. "python")
+	Source        string            // full OCI reference
+	InstallDir    string            // temp dir containing install.sh
+	Options       map[string]any    // effective options: feature defaults merged under user-specified values
+	Env           map[string]string // feature's containerEnv from metadata
+	InstallsAfter []string          // OCI refs this feature should install after
+	Digest        string            // resolved OCI digest (sha256:...) pulled for this feature
+	Version       string            // feature version reported by devcontainer-feature.json
 }
 
 // featureMetadata is the subset of devcontainer-feature.json we care about.
@@ -47,15 +47,15 @@ type featureMetadata struct {
 // The spec allows string, boolean, or enum options; Default carries whichever
 // JSON scalar the feature declared.
 type featureOption struct {
-	Default interface{} `json:"default"`
+	Default any `json:"default"`
 }
 
 // mergeOptionDefaults returns a new options map: the feature's declared option
 // defaults, overridden by any user-supplied option. It never mutates userOpts.
 // Options with no default (Default == nil) are not added — an unset option with
 // no default is left for install.sh to handle.
-func mergeOptionDefaults(userOpts map[string]interface{}, meta featureMetadata) map[string]interface{} {
-	merged := make(map[string]interface{}, len(meta.Options)+len(userOpts))
+func mergeOptionDefaults(userOpts map[string]any, meta featureMetadata) map[string]any {
+	merged := make(map[string]any, len(meta.Options)+len(userOpts))
 	for name, opt := range meta.Options {
 		if opt.Default != nil {
 			merged[name] = opt.Default
@@ -93,7 +93,7 @@ func (m featureMetadata) installsAfterRefs() []string {
 // extracts them to temp directories. The returned slice is sorted by
 // installsAfter dependencies, then alphabetically by ID.
 // The returned cleanup function removes all temp directories.
-func ResolveFeatures(features map[string]map[string]interface{}, workspace string, noCache bool) ([]ResolvedFeature, func(), error) {
+func ResolveFeatures(features map[string]map[string]any, workspace string, noCache bool) ([]ResolvedFeature, func(), error) {
 	if len(features) == 0 {
 		return nil, func() {}, nil
 	}
@@ -436,7 +436,7 @@ func sortFeatures(features []ResolvedFeature) {
 // This matches how the official devcontainer CLI passes options to install.sh:
 // options go in an env file that the wrapper sources before running install.sh,
 // so they're available during installation but don't persist as image ENV vars.
-func writeFeatureFiles(featureDir string, opts map[string]interface{}) error {
+func writeFeatureFiles(featureDir string, opts map[string]any) error {
 	// Write devcontainer-features.env with options as env vars.
 	var envBuf strings.Builder
 	if len(opts) > 0 {

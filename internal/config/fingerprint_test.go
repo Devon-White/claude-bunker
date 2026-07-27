@@ -382,7 +382,7 @@ func TestImageFingerprint_DigestChangeInvalidates(t *testing.T) {
 		Version:    "1.0.0",
 		Dockerfile: "FROM x",
 		ProjectCfg: ProjectConfig{
-			Features: map[string]map[string]interface{}{
+			Features: map[string]map[string]any{
 				"ghcr.io/devcontainers/features/node:1": {"version": "20"},
 			},
 		},

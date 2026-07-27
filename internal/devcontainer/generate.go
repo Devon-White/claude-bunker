@@ -31,15 +31,15 @@ func isEnvRef(s string) bool {
 // capAdd gets NET_ADMIN/NET_RAW, remoteUser is claude-bunker. Bunker extras go
 // in customizations["claude-bunker"].
 func Generate(cfg config.ProjectConfig, opts GenerateOpts) ([]byte, error) {
-	features := map[string]interface{}{}
+	features := map[string]any{}
 	if opts.ClaudeCodeFeature != "" {
-		features[opts.ClaudeCodeFeature] = map[string]interface{}{}
+		features[opts.ClaudeCodeFeature] = map[string]any{}
 	}
 	for ref, o := range cfg.Features {
 		features[ref] = o
 	}
 
-	dc := map[string]interface{}{
+	dc := map[string]any{
 		"capAdd":     forcedCaps,
 		"remoteUser": bunkerUser,
 	}
@@ -62,7 +62,7 @@ func Generate(cfg config.ProjectConfig, opts GenerateOpts) ([]byte, error) {
 		dc["onCreateCommand"] = cfg.OnCreateCommand
 	}
 
-	bc := map[string]interface{}{}
+	bc := map[string]any{}
 	if len(cfg.Exclude) > 0 {
 		bc["exclude"] = cfg.Exclude
 	}
@@ -89,7 +89,7 @@ func Generate(cfg config.ProjectConfig, opts GenerateOpts) ([]byte, error) {
 		bc["workspace"] = cfg.Workspace
 	}
 	if len(bc) > 0 {
-		dc["customizations"] = map[string]interface{}{bunkerCustomizationsKey: bc}
+		dc["customizations"] = map[string]any{bunkerCustomizationsKey: bc}
 	}
 
 	body, err := json.MarshalIndent(dc, "", "  ")

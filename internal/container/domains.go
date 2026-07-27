@@ -57,4 +57,3 @@ func SandboxExtraDomains() []string {
 	copy(out, sandboxExtraDomains)
 	return out
 }
-

@@ -15,17 +15,17 @@ import (
 // ProjectConfig represents the unified claude-bunker configuration.
 // Location: .claude/.claude-bunker/config.json
 type ProjectConfig struct {
-	Workspace        string                            `json:"workspace"`
-	Exclude          []string                          `json:"exclude"`
-	AllowDomains     []string                          `json:"allowDomains"`
-	Features         map[string]map[string]interface{} `json:"features"`
-	Apt              []string                          `json:"apt"`
-	Env              map[string]string                 `json:"env"`
-	OnCreateCommand  string                            `json:"onCreateCommand"`
-	PostStartCommand string                            `json:"postStartCommand"`
-	GhToken          string                            `json:"ghToken,omitempty"`
-	SeedHistory      *bool                             `json:"seedHistory,omitempty"`
-	Plugins          string                            `json:"plugins,omitempty"`
+	Workspace        string                    `json:"workspace"`
+	Exclude          []string                  `json:"exclude"`
+	AllowDomains     []string                  `json:"allowDomains"`
+	Features         map[string]map[string]any `json:"features"`
+	Apt              []string                  `json:"apt"`
+	Env              map[string]string         `json:"env"`
+	OnCreateCommand  string                    `json:"onCreateCommand"`
+	PostStartCommand string                    `json:"postStartCommand"`
+	GhToken          string                    `json:"ghToken,omitempty"`
+	SeedHistory      *bool                     `json:"seedHistory,omitempty"`
+	Plugins          string                    `json:"plugins,omitempty"`
 }
 
 // Plugin level constants.

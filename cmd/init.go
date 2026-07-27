@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -453,19 +453,19 @@ func selectSettings(existing *config.ProjectConfig) (initSettings, error) {
 }
 
 // buildConfig constructs a config map from selected languages/versions.
-func buildConfig(selections []initSelection) map[string]interface{} {
-	cfg := make(map[string]interface{})
+func buildConfig(selections []initSelection) map[string]any {
+	cfg := make(map[string]any)
 
 	if len(selections) == 0 {
 		return cfg
 	}
 
-	features := make(map[string]interface{})
+	features := make(map[string]any)
 	var domains []string
 
 	for _, s := range selections {
 		ref := fmt.Sprintf("%s:%s", s.preset.FeatureRepo, s.tag)
-		features[ref] = map[string]interface{}{
+		features[ref] = map[string]any{
 			s.preset.VersionOption: s.version,
 		}
 		domains = append(domains, s.preset.Domains...)
@@ -482,7 +482,7 @@ func buildConfig(selections []initSelection) map[string]interface{} {
 
 // mergeSettings merges user-selected settings into the config map.
 // Only sets keys for non-default values to keep the config minimal.
-func mergeSettings(cfg map[string]interface{}, s initSettings) {
+func mergeSettings(cfg map[string]any, s initSettings) {
 	if cfg == nil {
 		return
 	}
@@ -490,7 +490,7 @@ func mergeSettings(cfg map[string]interface{}, s initSettings) {
 	// Allowed domains: merge with any language-preset domains
 	if s.allowDomains != "" {
 		var extra []string
-		for _, d := range strings.Split(s.allowDomains, ",") {
+		for d := range strings.SplitSeq(s.allowDomains, ",") {
 			d = strings.TrimSpace(d)
 			if d != "" {
 				extra = append(extra, d)
@@ -518,7 +518,7 @@ func mergeSettings(cfg map[string]interface{}, s initSettings) {
 
 	if s.envVars != "" {
 		env := make(map[string]string)
-		for _, pair := range strings.Split(s.envVars, ",") {
+		for pair := range strings.SplitSeq(s.envVars, ",") {
 			pair = strings.TrimSpace(pair)
 			if k, v, ok := strings.Cut(pair, "="); ok {
 				k = strings.TrimSpace(k)
@@ -577,7 +577,7 @@ func writeDevContainer(workspace string, cfg config.ProjectConfig) error {
 
 // mapToProjectConfig converts the wizard's config map to a ProjectConfig via JSON
 // (the map keys are ProjectConfig's json tags).
-func mapToProjectConfig(m map[string]interface{}) (config.ProjectConfig, error) {
+func mapToProjectConfig(m map[string]any) (config.ProjectConfig, error) {
 	var pc config.ProjectConfig
 	if len(m) == 0 {
 		return pc, nil

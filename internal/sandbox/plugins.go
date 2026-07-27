@@ -217,7 +217,7 @@ func rewriteInstalledPlugins(ctx context.Context, cli *client.Client, containerI
 	modified := false
 	for pluginName, entries := range installed.Plugins {
 		for i, raw := range entries {
-			var entry map[string]interface{}
+			var entry map[string]any
 			if err := json.Unmarshal(raw, &entry); err != nil {
 				continue
 			}
@@ -261,7 +261,7 @@ func rewriteKnownMarketplaces(ctx context.Context, cli *client.Client, container
 		return
 	}
 
-	var marketplaces map[string]map[string]interface{}
+	var marketplaces map[string]map[string]any
 	if err := json.Unmarshal(data, &marketplaces); err != nil {
 		return
 	}
@@ -292,7 +292,7 @@ func rewriteKnownMarketplaces(ctx context.Context, cli *client.Client, container
 
 // rewritePathField rewrites a string field in a map from a host path prefix
 // to a container path prefix. Returns true if the field was modified.
-func rewritePathField(m map[string]interface{}, key, hostPrefix, containerPrefix string) bool {
+func rewritePathField(m map[string]any, key, hostPrefix, containerPrefix string) bool {
 	val, ok := m[key].(string)
 	if !ok || val == "" {
 		return false
@@ -608,4 +608,3 @@ func hostManagedMCPPath() string {
 		return ""
 	}
 }
-

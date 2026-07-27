@@ -173,7 +173,7 @@ func TestSafeOptionEnvName(t *testing.T) {
 
 func TestWriteFeatureFiles(t *testing.T) {
 	dir := t.TempDir()
-	opts := map[string]interface{}{
+	opts := map[string]any{
 		"version":    "1.22",
 		"installFoo": "true",
 	}
@@ -250,7 +250,7 @@ func TestMergeOptionDefaults(t *testing.T) {
 	})
 
 	t.Run("user value overrides default", func(t *testing.T) {
-		got := mergeOptionDefaults(map[string]interface{}{"version": "20"}, meta)
+		got := mergeOptionDefaults(map[string]any{"version": "20"}, meta)
 		if got["version"] != "20" {
 			t.Errorf("user value should win: got %v", got["version"])
 		}
@@ -260,7 +260,7 @@ func TestMergeOptionDefaults(t *testing.T) {
 	})
 
 	t.Run("does not mutate the caller's map", func(t *testing.T) {
-		user := map[string]interface{}{"version": "20"}
+		user := map[string]any{"version": "20"}
 		_ = mergeOptionDefaults(user, meta)
 		if len(user) != 1 {
 			t.Errorf("caller map was mutated: %+v", user)

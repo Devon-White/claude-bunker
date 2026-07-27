@@ -79,7 +79,7 @@ func TestWriteDevContainer(t *testing.T) {
 	ws := t.TempDir()
 	seed := false
 	cfg := config.ProjectConfig{
-		Features:    map[string]map[string]interface{}{"ghcr.io/devcontainers/features/node:1": {"version": "20"}},
+		Features:    map[string]map[string]any{"ghcr.io/devcontainers/features/node:1": {"version": "20"}},
 		Exclude:     []string{"secrets/"},
 		SeedHistory: &seed,
 	}
@@ -123,7 +123,7 @@ func TestWriteDevContainer_DryRunPlansWithoutWriting(t *testing.T) {
 	t.Cleanup(func() { dryRun = origDry })
 
 	cfg := config.ProjectConfig{
-		Features: map[string]map[string]interface{}{
+		Features: map[string]map[string]any{
 			"ghcr.io/devcontainers/features/node:1": {"version": "20"},
 		},
 	}

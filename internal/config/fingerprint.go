@@ -65,7 +65,7 @@ func imageFingerprint(b BuildInput) string {
 			}
 			sort.Strings(optKeys)
 			for _, k := range optKeys {
-				h.Write([]byte(fmt.Sprintf("%s=%v,", k, opts[k])))
+				fmt.Fprintf(h, "%s=%v,", k, opts[k])
 			}
 		}
 	}

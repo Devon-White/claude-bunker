@@ -22,7 +22,7 @@ var forcedCaps = []string{"NET_ADMIN", "NET_RAW"}
 type DevContainer struct {
 	Name             string                     `json:"name,omitempty"`
 	Image            string                     `json:"image,omitempty"`
-	Features         map[string]interface{}     `json:"features,omitempty"` // ref → options object (or shorthand)
+	Features         map[string]any             `json:"features,omitempty"` // ref → options object (or shorthand)
 	CapAdd           []string                   `json:"capAdd,omitempty"`
 	SecurityOpt      []string                   `json:"securityOpt,omitempty"`
 	RemoteUser       string                     `json:"remoteUser,omitempty"`
@@ -66,15 +66,15 @@ func (dc DevContainer) bunkerExtras() bunkerCustomizations {
 func ToProjectConfig(dc DevContainer) config.ProjectConfig {
 	bc := dc.bunkerExtras()
 
-	features := map[string]map[string]interface{}{}
+	features := map[string]map[string]any{}
 	for ref, opts := range dc.Features {
 		if b, ok := opts.(bool); ok && !b {
 			continue // false shorthand: feature explicitly disabled, skip it
 		}
-		if m, ok := opts.(map[string]interface{}); ok {
+		if m, ok := opts.(map[string]any); ok {
 			features[ref] = m
 		} else {
-			features[ref] = map[string]interface{}{}
+			features[ref] = map[string]any{}
 		}
 	}
 

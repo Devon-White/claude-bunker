@@ -27,8 +27,8 @@ import (
 // most dangerous syscalls that have no legitimate use inside the sandbox.
 var seccompProfile = func() string {
 	type seccompArch struct {
-		Arch      string   `json:"architecture"`
-		SubArchs  []string `json:"subArchitectures,omitempty"`
+		Arch     string   `json:"architecture"`
+		SubArchs []string `json:"subArchitectures,omitempty"`
 	}
 	type seccompSyscall struct {
 		Names  []string `json:"names"`
@@ -84,11 +84,11 @@ var seccompProfile = func() string {
 // mandatoryEnvKeys lists environment variables that are always set by
 // claude-bunker and must not be overridden by user-defined env vars.
 var mandatoryEnvKeys = map[string]bool{
-	"CLAUDE_CONFIG_DIR":                          true,
-	"POWERLEVEL9K_DISABLE_GITSTATUS":             true,
-	"DEVCONTAINER":                               true,
-	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":   true,
-	"DISABLE_INSTALLATION_CHECKS":                true,
+	"CLAUDE_CONFIG_DIR":                        true,
+	"POWERLEVEL9K_DISABLE_GITSTATUS":           true,
+	"DEVCONTAINER":                             true,
+	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": true,
+	"DISABLE_INSTALLATION_CHECKS":              true,
 }
 
 // FindByLabel finds a container (running or stopped) with the claude-bunker label.
@@ -289,8 +289,8 @@ func CreateAndStart(ctx context.Context, cli *client.Client, opts CreateAndStart
 	// modify iptables rules. If the bubblewrap sandbox is bypassed, the
 	// attacker would still need to escalate to root to exercise NET_ADMIN.
 	hostCfg := &container.HostConfig{
-		Mounts:  mounts,
-		CapAdd:  []string{"NET_ADMIN", "NET_RAW"},
+		Mounts:      mounts,
+		CapAdd:      []string{"NET_ADMIN", "NET_RAW"},
 		SecurityOpt: []string{"apparmor=unconfined", "seccomp=" + seccompProfile},
 	}
 

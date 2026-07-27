@@ -10,8 +10,8 @@ import (
 type ContainerState struct {
 	ID          string        `json:"id"`
 	Name        string        `json:"name"`         // label value: "project-a1b2c3d4"
-	DisplayName string        `json:"display_name"`  // human portion: "project-a"
-	Status      string        `json:"status"`        // "running", "exited", "created", etc.
+	DisplayName string        `json:"display_name"` // human portion: "project-a"
+	Status      string        `json:"status"`       // "running", "exited", "created", etc.
 	StartedAt   time.Time     `json:"started_at"`
 	Sessions    []SessionInfo `json:"sessions"`
 }

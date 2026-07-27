@@ -50,8 +50,7 @@ func ExitCodeFor(err error) int {
 	if err == nil {
 		return ExitOK
 	}
-	var ce *CodedError
-	if errors.As(err, &ce) {
+	if ce, ok := errors.AsType[*CodedError](err); ok {
 		return ce.Code
 	}
 	return ExitError

@@ -77,7 +77,7 @@ func TestGenerateDockerfile_Features(t *testing.T) {
 		{
 			ID:     "python",
 			Source: "ghcr.io/devcontainers/features/python:1",
-			Options: map[string]interface{}{
+			Options: map[string]any{
 				"version": "3.12",
 			},
 			Env: map[string]string{

@@ -7,7 +7,7 @@ import (
 )
 
 func TestStripBunkerFeatures(t *testing.T) {
-	in := map[string]map[string]interface{}{
+	in := map[string]map[string]any{
 		"ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
 		"ghcr.io/Devon-White/claude-bunker/firewall:1":           {},
 		"ghcr.io/devcontainers/features/node:1":                  {"version": "20"},
@@ -25,7 +25,7 @@ func TestStripBunkerFeatures(t *testing.T) {
 }
 
 func TestStripBunkerFeatures_PrefixBoundary(t *testing.T) {
-	in := map[string]map[string]interface{}{
+	in := map[string]map[string]any{
 		"ghcr.io/anthropics/devcontainer-features/claude-code:1":     {}, // bunker-managed → stripped
 		"ghcr.io/anthropics/devcontainer-features/claude-code-cli:1": {}, // DISTINCT sibling → kept
 	}
