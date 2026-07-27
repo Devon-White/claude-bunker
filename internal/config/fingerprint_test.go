@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -407,6 +408,33 @@ func TestImageFingerprint_DigestChangeInvalidates(t *testing.T) {
 	if fp1 != fp2 {
 		t.Error("fingerprint must be deterministic")
 	}
+}
+
+func TestCacheDir(t *testing.T) {
+	t.Run("honors CLAUDE_BUNKER_CACHE_DIR", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("CLAUDE_BUNKER_CACHE_DIR", dir)
+		got, err := CacheDir()
+		if err != nil {
+			t.Fatalf("CacheDir() error: %v", err)
+		}
+		if got != dir {
+			t.Errorf("CacheDir() = %q, want %q", got, dir)
+		}
+	})
+	t.Run("falls back to ~/.cache/claude-bunker", func(t *testing.T) {
+		t.Setenv("CLAUDE_BUNKER_CACHE_DIR", "")
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		got, err := CacheDir()
+		if err != nil {
+			t.Fatalf("CacheDir() error: %v", err)
+		}
+		want := filepath.Join(home, ".cache", "claude-bunker")
+		if got != want {
+			t.Errorf("CacheDir() = %q, want %q", got, want)
+		}
+	})
 }
 
 // Ensure HOME env var is set for test (needed for cacheDir)

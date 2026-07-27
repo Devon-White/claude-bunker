@@ -199,19 +199,24 @@ func ClearFingerprint(containerName string) error {
 	return nil
 }
 
-// cacheDir returns the fingerprint cache directory.
-func cacheDir() (string, error) {
+// CacheDir returns the claude-bunker cache directory, where per-container
+// fingerprints (<containerName>.fp) and build locks (<containerName>.build.lock)
+// live. It honors CLAUDE_BUNKER_CACHE_DIR (used for test isolation and custom
+// setups) and otherwise falls back to <UserHomeDir>/.cache/claude-bunker.
+func CacheDir() (string, error) {
+	if d := os.Getenv("CLAUDE_BUNKER_CACHE_DIR"); d != "" {
+		return d, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".cache", "claude-bunker")
-	return dir, nil
+	return filepath.Join(home, ".cache", "claude-bunker"), nil
 }
 
 // fingerprintPath returns the path to the cached fingerprint for a container.
 func fingerprintPath(containerName string) (string, error) {
-	dir, err := cacheDir()
+	dir, err := CacheDir()
 	if err != nil {
 		return "", err
 	}
