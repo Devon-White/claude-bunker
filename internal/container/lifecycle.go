@@ -19,27 +19,37 @@ import (
 	"github.com/Devon-White/claude-bunker/internal/log"
 )
 
-// seccompProfile is a custom seccomp profile that allows most syscalls but
-// blocks dangerous kernel interfaces. This is a pragmatic middle ground between
-// Docker's default profile (which blocks syscalls bubblewrap needs like
-// pivot_root, clone, unshare, mount) and seccomp=unconfined (which allows
-// everything). The default action is ALLOW, with an explicit blocklist of the
-// most dangerous syscalls that have no legitimate use inside the sandbox.
-var seccompProfile = func() string {
-	type seccompArch struct {
-		Arch     string   `json:"architecture"`
-		SubArchs []string `json:"subArchitectures,omitempty"`
-	}
-	type seccompSyscall struct {
-		Names  []string `json:"names"`
-		Action string   `json:"action"`
-	}
-	type seccompProfileDef struct {
-		DefaultAction string           `json:"defaultAction"`
-		Architectures []seccompArch    `json:"architectures,omitempty"`
-		Syscalls      []seccompSyscall `json:"syscalls"`
-	}
+// seccompArch, seccompSyscall, and seccompProfileDef describe the shape of a
+// Docker/OCI seccomp profile document.
+type seccompArch struct {
+	Arch     string   `json:"architecture"`
+	SubArchs []string `json:"subArchitectures,omitempty"`
+}
 
+type seccompSyscall struct {
+	Names  []string `json:"names"`
+	Action string   `json:"action"`
+}
+
+type seccompProfileDef struct {
+	DefaultAction string           `json:"defaultAction"`
+	Architectures []seccompArch    `json:"architectures,omitempty"`
+	Syscalls      []seccompSyscall `json:"syscalls"`
+}
+
+// SeccompProfileJSON returns the canonical claude-bunker seccomp profile as
+// pretty-printed, deterministic JSON. It is a custom seccomp profile that
+// allows most syscalls but blocks dangerous kernel interfaces. This is a
+// pragmatic middle ground between Docker's default profile (which blocks
+// syscalls bubblewrap needs like pivot_root, clone, unshare, mount) and
+// seccomp=unconfined (which allows everything). The default action is ALLOW,
+// with an explicit blocklist of the most dangerous syscalls that have no
+// legitimate use inside the sandbox.
+//
+// This is the single source of truth for the profile: it is used both for
+// bunker's native container creation (SecurityOpt below) and for the
+// portable `.devcontainer/seccomp.json` emitted for OCI-feature-based setups.
+func SeccompProfileJSON() string {
 	profile := seccompProfileDef{
 		DefaultAction: "SCMP_ACT_ALLOW",
 		Syscalls: []seccompSyscall{
@@ -74,12 +84,16 @@ var seccompProfile = func() string {
 		},
 	}
 
-	data, err := json.Marshal(profile)
+	data, err := json.MarshalIndent(profile, "", "  ")
 	if err != nil {
 		panic("failed to marshal seccomp profile: " + err.Error())
 	}
 	return string(data)
-}()
+}
+
+// seccompProfile is the cached canonical profile JSON, computed once at
+// package init. It is used by native container creation below.
+var seccompProfile = SeccompProfileJSON()
 
 // mandatoryEnvKeys lists environment variables that are always set by
 // claude-bunker and must not be overridden by user-defined env vars.
