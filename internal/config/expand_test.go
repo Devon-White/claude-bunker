@@ -1,8 +1,6 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -98,38 +96,5 @@ func TestExpandProjectConfig(t *testing.T) {
 	// Non-string feature values are untouched
 	if v, ok := cfg.Features["python"]["count"].(float64); !ok || v != 3.0 {
 		t.Errorf("Features[python][count] = %v, want 3.0", cfg.Features["python"]["count"])
-	}
-}
-
-func TestLoadProjectConfig_ExpandsEnvVars(t *testing.T) {
-	t.Setenv("CB_GH_TOKEN", "ghp_test_token")
-	t.Setenv("CB_DOMAIN", "private.example.com")
-
-	dir := t.TempDir()
-	cfgDir := filepath.Join(dir, ".claude", ".claude-bunker")
-	os.MkdirAll(cfgDir, 0755)
-	data := `{
-		"workspace": "${CB_WS:-src}",
-		"allowDomains": ["${CB_DOMAIN}"],
-		"ghToken": "${CB_GH_TOKEN}",
-		"env": {"SECRET": "${CB_GH_TOKEN}"}
-	}`
-	os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(data), 0644)
-
-	cfg, err := LoadProjectConfig(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Workspace != "src" {
-		t.Errorf("Workspace = %q, want %q", cfg.Workspace, "src")
-	}
-	if cfg.GhToken != "ghp_test_token" {
-		t.Errorf("GhToken = %q, want %q", cfg.GhToken, "ghp_test_token")
-	}
-	if len(cfg.AllowDomains) != 1 || cfg.AllowDomains[0] != "private.example.com" {
-		t.Errorf("AllowDomains = %v, want [private.example.com]", cfg.AllowDomains)
-	}
-	if cfg.Env["SECRET"] != "ghp_test_token" {
-		t.Errorf("Env[SECRET] = %q, want %q", cfg.Env["SECRET"], "ghp_test_token")
 	}
 }

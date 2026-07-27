@@ -1,19 +1,12 @@
 package config
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
-
-	"github.com/Devon-White/claude-bunker/internal/log"
 )
 
 // ProjectConfig represents the unified claude-bunker configuration.
-// Location: .claude/.claude-bunker/config.json
 type ProjectConfig struct {
 	Workspace        string                    `json:"workspace"`
 	Exclude          []string                  `json:"exclude"`
@@ -69,39 +62,6 @@ func (c ProjectConfig) ShouldSeedHistory() bool {
 // additional Dockerfile layers (features or env vars).
 func (c ProjectConfig) HasGeneratedLayers() bool {
 	return len(c.Features) > 0 || len(c.Env) > 0 || c.OnCreateCommand != ""
-}
-
-// LoadProjectConfig reads .claude/.claude-bunker/config.json from the workspace.
-// Returns a zero-value config if the file doesn't exist.
-func LoadProjectConfig(workspace string) (ProjectConfig, error) {
-	p := ConfigPath(workspace)
-	data, err := os.ReadFile(p)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return ProjectConfig{}, nil
-		}
-		return ProjectConfig{}, err
-	}
-	var cfg ProjectConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return ProjectConfig{}, err
-	}
-	expandProjectConfig(&cfg)
-
-	// Warn if ghToken looks like a literal token value rather than an env var reference.
-	// This catches accidental credential commits — ghToken should normally be "${GH_TOKEN}" or similar.
-	if cfg.GhToken != "" && !strings.Contains(cfg.GhToken, "${") && !strings.HasPrefix(cfg.GhToken, "$") {
-		log.Warn("ghToken in config.json appears to be a literal value, not an env var reference (e.g. \"${GH_TOKEN}\"). Avoid committing credentials to version control.")
-	}
-
-	// Normalize domain whitespace before validation
-	for i, d := range cfg.AllowDomains {
-		cfg.AllowDomains[i] = strings.TrimSpace(d)
-	}
-	if err := validateDomains(cfg.AllowDomains); err != nil {
-		return ProjectConfig{}, err
-	}
-	return cfg, nil
 }
 
 // validDomainChars matches only characters that are safe in domain patterns.
@@ -162,9 +122,4 @@ func NormalizeDomains(cfg *ProjectConfig) error {
 		cfg.AllowDomains[i] = strings.TrimSpace(d)
 	}
 	return validateDomains(cfg.AllowDomains)
-}
-
-// ConfigPath returns the path to .claude/.claude-bunker/config.json in the given workspace.
-func ConfigPath(workspace string) string {
-	return filepath.Join(workspace, ".claude", ".claude-bunker", "config.json")
 }
