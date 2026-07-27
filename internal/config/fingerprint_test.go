@@ -437,7 +437,7 @@ func TestCacheDir(t *testing.T) {
 	})
 }
 
-// Ensure HOME env var is set for test (needed for cacheDir)
+// Ensure HOME env var is set for test (needed for CacheDir)
 func init() {
 	if os.Getenv("HOME") == "" {
 		os.Setenv("HOME", os.TempDir())
