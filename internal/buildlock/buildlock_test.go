@@ -3,21 +3,20 @@ package buildlock
 import (
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// withCacheDir points config.CacheDir() at a temp dir and restores tunable
+// withCacheDir points config.CacheDir() at a temp dir and restores the tunable
 // seams after the test.
 func withCacheDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("CLAUDE_BUNKER_CACHE_DIR", dir)
-	// Save/restore package-var seams so tests don't bleed into each other.
-	origTimeout, origRetry, origPid, origStale := acquireTimeout, retryEvery, pidAlive, staleAfter
-	t.Cleanup(func() {
-		acquireTimeout, retryEvery, pidAlive, staleAfter = origTimeout, origRetry, origPid, origStale
-	})
+	origTimeout, origRetry := acquireTimeout, retryEvery
+	t.Cleanup(func() { acquireTimeout, retryEvery = origTimeout, origRetry })
 	return dir
 }
 
@@ -39,22 +38,24 @@ func TestAcquireReleaseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Acquire error: %v", err)
 	}
-	path := filepath.Join(dir, "proj.build.lock")
-	if _, err := os.Stat(path); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "proj.build.lock")); err != nil {
 		t.Fatalf("lock file should exist after Acquire: %v", err)
 	}
 	l.Release()
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("lock file should be gone after Release; stat err = %v", err)
-	}
 	l.Release() // idempotent — must not panic
+
+	// After release the lock is free: a second Acquire succeeds immediately.
+	l2, err := Acquire("proj")
+	if err != nil {
+		t.Fatalf("second Acquire after Release should succeed: %v", err)
+	}
+	l2.Release()
 }
 
-func TestAcquireFailsClosedOnTimeout(t *testing.T) {
+func TestAcquireFailsClosedWhileHeld(t *testing.T) {
 	withCacheDir(t)
-	acquireTimeout = 80 * time.Millisecond
+	acquireTimeout = 120 * time.Millisecond
 	retryEvery = 10 * time.Millisecond
-	pidAlive = func(int) bool { return true } // holder always "alive" → never reclaim
 
 	held, err := Acquire("proj")
 	if err != nil {
@@ -66,41 +67,69 @@ func TestAcquireFailsClosedOnTimeout(t *testing.T) {
 	if _, err := Acquire("proj"); err == nil {
 		t.Fatal("second Acquire must FAIL CLOSED while the lock is held")
 	}
-	if elapsed := time.Since(start); elapsed < 60*time.Millisecond {
-		t.Errorf("Acquire returned in %s, expected it to wait ~acquireTimeout before failing", elapsed)
+	if elapsed := time.Since(start); elapsed < 90*time.Millisecond {
+		t.Errorf("Acquire returned in %s; expected it to wait ~acquireTimeout before failing", elapsed)
 	}
 }
 
-func TestAcquireReclaimsDeadHolder(t *testing.T) {
-	dir := withCacheDir(t)
-	pidAlive = func(int) bool { return false } // recorded holder is "dead"
+func TestReleaseFreesForNextHolder(t *testing.T) {
+	withCacheDir(t)
+	acquireTimeout = 2 * time.Second
+	retryEvery = 5 * time.Millisecond
 
-	// Seed a lock file as if a crashed process holds it.
-	path := filepath.Join(dir, "proj.build.lock")
-	if err := os.WriteFile(path, []byte(`{"pid":999999,"nonce":"deadbeef","started_at":1}`), 0o600); err != nil {
+	a, err := Acquire("proj")
+	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := Acquire("proj") // must reclaim and succeed
-	if err != nil {
-		t.Fatalf("Acquire should reclaim a dead holder's lock: %v", err)
+
+	acquired := make(chan *Lock, 1)
+	go func() {
+		l, err := Acquire("proj") // blocks until a releases
+		if err != nil {
+			t.Errorf("waiter Acquire: %v", err)
+			acquired <- nil
+			return
+		}
+		acquired <- l
+	}()
+
+	time.Sleep(30 * time.Millisecond) // let the waiter start polling
+	a.Release()
+
+	select {
+	case l := <-acquired:
+		if l == nil {
+			t.Fatal("waiter failed to acquire after release")
+		}
+		l.Release()
+	case <-time.After(1 * time.Second):
+		t.Fatal("waiter did not acquire the lock within 1s after release")
 	}
-	l.Release()
 }
 
-func TestReleaseHonorsNonce(t *testing.T) {
-	dir := withCacheDir(t)
-	l, err := Acquire("proj")
-	if err != nil {
-		t.Fatalf("Acquire error: %v", err)
+func TestConcurrentAcquireIsMutuallyExclusive(t *testing.T) {
+	withCacheDir(t)
+	acquireTimeout = 5 * time.Second
+	retryEvery = 2 * time.Millisecond
+
+	var inside int32
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			l, err := Acquire("proj")
+			if err != nil {
+				t.Errorf("Acquire error: %v", err)
+				return
+			}
+			if n := atomic.AddInt32(&inside, 1); n > 1 {
+				t.Errorf("two concurrent lock holders (inside=%d) — mutual exclusion broken", n)
+			}
+			time.Sleep(3 * time.Millisecond)
+			atomic.AddInt32(&inside, -1)
+			l.Release()
+		}()
 	}
-	// Simulate a later holder having reclaimed and rewritten the lock with a
-	// different nonce. Our Release must NOT delete the new holder's file.
-	path := filepath.Join(dir, "proj.build.lock")
-	if err := os.WriteFile(path, []byte(`{"pid":1,"nonce":"someone-else","started_at":2}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	l.Release()
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("Release must not remove a lock owned by a different nonce; stat err = %v", err)
-	}
+	wg.Wait()
 }

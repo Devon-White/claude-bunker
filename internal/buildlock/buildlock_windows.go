@@ -2,24 +2,29 @@
 
 package buildlock
 
-import "golang.org/x/sys/windows"
+import (
+	"os"
 
-// defaultPidAlive reports whether a process with pid is alive on Windows.
-// os.FindProcess always "succeeds", so query the process exit code instead:
-// STILL_ACTIVE (259) means running.
-func defaultPidAlive(pid int) bool {
-	if pid <= 0 {
-		return false
+	"golang.org/x/sys/windows"
+)
+
+// tryLock takes a non-blocking exclusive lock on the first byte of f via
+// LockFileEx. If the region is already locked it returns errWouldBlock.
+func tryLock(f *os.File) error {
+	ol := new(windows.Overlapped)
+	err := windows.LockFileEx(
+		windows.Handle(f.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0, 1, 0, ol,
+	)
+	if err == windows.ERROR_LOCK_VIOLATION {
+		return errWouldBlock
 	}
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
-	if err != nil {
-		return false
-	}
-	defer windows.CloseHandle(h)
-	var code uint32
-	if err := windows.GetExitCodeProcess(h, &code); err != nil {
-		return false
-	}
-	const stillActive = 259 // STILL_ACTIVE
-	return code == stillActive
+	return err
+}
+
+// unlock releases the LockFileEx lock held on f.
+func unlock(f *os.File) error {
+	ol := new(windows.Overlapped)
+	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, ol)
 }

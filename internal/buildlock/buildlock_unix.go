@@ -2,15 +2,23 @@
 
 package buildlock
 
-import "syscall"
+import (
+	"os"
+	"syscall"
+)
 
-// defaultPidAlive reports whether a process with pid is alive. Signal 0 does
-// error-checking without sending a signal: nil => alive; EPERM => alive but
-// owned by another user; ESRCH => no such process (dead).
-func defaultPidAlive(pid int) bool {
-	if pid <= 0 {
-		return false
+// tryLock takes a non-blocking exclusive advisory lock (flock LOCK_EX|LOCK_NB).
+// If another open file description holds the lock it returns errWouldBlock;
+// other errors are returned as-is.
+func tryLock(f *os.File) error {
+	err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err == syscall.EWOULDBLOCK || err == syscall.EAGAIN {
+		return errWouldBlock
 	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || err == syscall.EPERM
+	return err
+}
+
+// unlock releases the advisory lock held on f.
+func unlock(f *os.File) error {
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }
