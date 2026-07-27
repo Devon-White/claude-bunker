@@ -20,6 +20,12 @@ type mockClient struct {
 	top        map[string]container.TopResponse
 	stopErr    error
 	removeErr  error
+
+	// ContainerRename capture (asserted by names_test.go).
+	renameErr    error
+	renameCalled bool
+	renamedID    string
+	renamedName  string
 }
 
 func (m *mockClient) ContainerList(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
@@ -52,8 +58,11 @@ func (m *mockClient) ContainerStart(_ context.Context, _ string, _ container.Sta
 	return nil
 }
 
-func (m *mockClient) ContainerRename(_ context.Context, _, _ string) error {
-	return nil
+func (m *mockClient) ContainerRename(_ context.Context, id, newName string) error {
+	m.renameCalled = true
+	m.renamedID = id
+	m.renamedName = newName
+	return m.renameErr
 }
 
 func (m *mockClient) Events(_ context.Context, _ events.ListOptions) (<-chan events.Message, <-chan error) {
