@@ -23,9 +23,9 @@ Releases are built by goreleaser (`.goreleaser.yml`) for linux/darwin/windows on
 
 ### Entry Flow
 
-`main.go` → `cmd.Execute()` → root command (`cmd/run.go`):
+`main.go` → `cmd.Execute()` → root command (`cmd/root.go`; run logic in `cmd/run.go`):
 1. `extractBunkerFlags()` manually parses claude-bunker flags (root command has `DisableFlagParsing: true` so unknown flags pass through to `claude`)
-2. Load project config from `.claude/.claude-bunker/config.json`
+2. Load project config from `.devcontainer/devcontainer.json` via `internal/devcontainer.LoadProjectConfig`
 3. Check fingerprints — rebuild image or recreate container only when config changes
 4. Build Docker image if needed (embedded scripts + generated Dockerfile, all in-memory tar)
 5. Create/reuse container, configure firewall, seed sandbox settings
@@ -37,16 +37,22 @@ Releases are built by goreleaser (`.goreleaser.yml`) for linux/darwin/windows on
 | Package | Role |
 |---------|------|
 | `cmd/` | Cobra CLI commands. Root disables flag parsing; subcommands re-enable it. |
-| `internal/config/` | Config loading (`project.go`), SHA-256 fingerprinting (`fingerprint.go`), deterministic container naming (`naming.go`), env var expansion (`expand.go`) |
-| `internal/container/` | Docker API wrapper: image build (`build.go`), Dockerfile generation (`generate.go`), container lifecycle (`lifecycle.go`), interactive exec (`exec.go`), domain/firewall management (`domains.go`) |
-| `internal/container/scripts/` | Embedded shell scripts (`//go:embed`): `init-firewall.sh`, `refresh-firewall.sh`, `firewall-common.sh`, `base.dockerfile.tmpl` |
+| `internal/config/` | Config loading (`project.go`), SHA-256 fingerprinting (`fingerprint.go`), deterministic container naming (`naming.go`), env var expansion (`expand.go`), OCI feature-name validation (`features.go`) |
+| `internal/devcontainer/` | Parse/generate `.devcontainer/devcontainer.json` (JSONC + `${localEnv}`), map to `ProjectConfig`, strip bunker-managed features (`devcontainer.go`, `generate.go`, `jsonc.go`, `load.go`, `merge.go`) |
+| `internal/container/` | Docker API wrapper: image build (`build.go`), Dockerfile generation (`generate.go`), container lifecycle (`lifecycle.go`), interactive exec (`exec.go`), domain/firewall management (`domains.go`), plus `lockfile.go` (devcontainer-lock.json), `baseimage.go`, `volumes.go`, `features.go`, `presets.go`, `constants.go`, `copy.go`, `client.go`, `embed.go` |
+| `internal/container/scripts/` | Embedded shell scripts (`//go:embed`): `init-firewall.sh`, `refresh-firewall.sh`, `firewall-common.sh`, `base.dockerfile.tmpl`, `tmux.conf` |
+| `internal/buildlock/` | Cross-process build lock (unix/windows variants) |
+| `internal/sessions/` | Session/subagent tree via `claude agents --json` (store, watcher, manager) |
 | `internal/sandbox/` | Sandbox settings seeding (`seed.go`), plugin loading (`plugins.go`), proxy config (`proxy.go`) |
+| `internal/log/` | Logging helpers |
 | `internal/platform/` | Platform-specific TTY, terminal resize (Unix signals vs Windows polling), Windows VT support |
 
-### Two Config Systems
+### Config
 
-- **`.claude/.claude-bunker/config.json`** — container infrastructure: allowed domains, apt packages, devcontainer features, env vars, secrets, hooks
-- **`.claude/settings.json`** — Claude Code behavior settings, merged with managed-settings.json inside the container
+- **`.devcontainer/devcontainer.json`** — the single project config. Standard devcontainer keys at top level (features, containerEnv, onCreateCommand, postStartCommand, capAdd, remoteUser); bunker extras under `customizations["claude-bunker"]` (exclude, allowDomains, apt, plugins, ghToken, seedHistory, workspace). Parsed by `internal/devcontainer`.
+- **`.devcontainer/devcontainer-lock.json`** — pins feature digests (reproducible builds); digests fold into the image fingerprint.
+- Enforcement of Claude Code behavior is a runtime read-only `/etc/claude-code/managed-settings.json` (written each start); host `settings.json`/`settings.local.json` are NOT injected.
+- Legacy `internal/config/project.go` `LoadProjectConfig`/`ConfigPath` (`.claude/.claude-bunker/config.json`) still exist but have no live caller — dead code, optionally removable.
 
 ### Five Security Layers
 
@@ -62,7 +68,7 @@ Auth tokens are injected via tmpfs at `/run/secrets/`, never as environment vari
 
 ### Fingerprinting & Caching
 
-`ImageFingerprint()` hashes version + Dockerfile + scripts + apt + features + env + onCreateCommand. `ContainerFingerprint()` hashes domains + workspace + excludes + postStartCommand. Reproducible mod times (`2025-01-01T00:00:00Z`) ensure Docker layer cache hits.
+The public API is `CompareFingerprints(BuildInput, containerName) FingerprintResult` (unexported `imageFingerprint`/`containerFingerprint` do the hashing). The image fingerprint covers version + Dockerfile + scripts + apt + features + env + onCreateCommand **plus resolved feature digests from `devcontainer-lock.json`**; the container fingerprint covers domains + workspace + excludes + postStartCommand + plugins + seedHistory. Reproducible mod times (`2025-01-01T00:00:00Z`) ensure Docker layer cache hits.
 
 ## Conventions
 
@@ -81,6 +87,10 @@ Auth tokens are injected via tmpfs at `/run/secrets/`, never as environment vari
 | `claude-bunker shell` | Open bash shell in sandbox |
 | `claude-bunker init` | Interactive config wizard |
 | `claude-bunker status` | Show sandbox state |
-| `claude-bunker prune` | Manage Docker volumes |
+| `claude-bunker doctor` | Environment readiness check (Docker/version/devcontainer) |
+| `claude-bunker prune` | Manage Docker volumes and images |
 | `claude-bunker logs` | View container logs |
+| `claude-bunker sessions [list\|stop\|attach\|logs]` | Session manager (TUI + scripting subcommands) |
+| `claude-bunker completion <shell>` | Shell completion script |
+| `claude-bunker version` | Print version (`--json`) |
 | `claude-bunker --dump-dockerfile [dir]` | Export Docker build context (used by CI) |
