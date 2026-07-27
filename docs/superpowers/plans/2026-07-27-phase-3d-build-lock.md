@@ -119,6 +119,8 @@ git commit -m "feat(config): export CacheDir() with CLAUDE_BUNKER_CACHE_DIR test
 
 ### Task 2: `internal/buildlock` package (fail-closed lock + PID-liveness + tests)
 
+> **DESIGN REVISION (post-review):** The original O_EXCL + PID-liveness + mtime-heartbeat + ownership-nonce design below proved to have an **inherent, unfixable-without-atomicity double-holder race** — any check-then-delete of a lock file by name is racy under concurrent reclaim (a concurrent regression test reproduced two simultaneous holders ~80% of runs). The implementation instead uses a **kernel advisory lock** (`flock(2)` on Unix, `LockFileEx` on Windows) on a persistent lock file: the kernel arbitrates exclusion and **auto-releases on process death** (crash/SIGKILL included), so there is no stale file, no heartbeat, no nonce, and no PID bookkeeping. The public API (`LockPath`/`Acquire`/`Release`) and the fail-closed timeout contract are unchanged, so Task 3 is unaffected. The O_EXCL code blocks below are **superseded**; the flock implementation is the delivered one.
+
 **Files:**
 - Create: `internal/buildlock/buildlock.go` (core `Lock`/`Acquire`/`Release`/`LockPath` + tunable seams)
 - Create: `internal/buildlock/buildlock_unix.go` (`//go:build !windows` PID-liveness)
