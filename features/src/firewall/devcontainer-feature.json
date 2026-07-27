@@ -1,0 +1,17 @@
+{
+  "id": "firewall",
+  "version": "0.1.0",
+  "name": "claude-bunker firewall",
+  "description": "Default-deny egress firewall (iptables + ipset) with a domain allowlist, IPv6 blocked, and a startup self-test. Mirrors claude-bunker's native firewall for the VS Code / Codespaces path.",
+  "documentationURL": "https://github.com/Devon-White/claude-bunker/tree/main/features/src/firewall",
+  "options": {
+    "allowDomains": {
+      "type": "string",
+      "default": "",
+      "description": "Comma-separated extra domains to allow (added to the built-in allowlist)."
+    }
+  },
+  "capAdd": ["NET_ADMIN", "NET_RAW"],
+  "postStartCommand": "sudo /usr/local/share/claude-bunker-firewall/run-firewall.sh",
+  "installsAfter": ["ghcr.io/devcontainers/features/common-utils"]
+}
