@@ -24,12 +24,13 @@ func readClientHello(r io.Reader) (string, []byte, error) {
 		return "", hdr, errors.New("not a TLS handshake record")
 	}
 	recLen := int(binary.BigEndian.Uint16(hdr[3:5]))
-	if recLen == 0 || recLen > 1<<16 {
+	if recLen == 0 || recLen > 16384 {
 		return "", hdr, errors.New("bad record length")
 	}
 	body := make([]byte, recLen)
-	if _, err := io.ReadFull(r, body); err != nil {
-		return "", append(hdr, body...), err
+	n, err := io.ReadFull(r, body)
+	if err != nil {
+		return "", append(hdr, body[:n]...), err
 	}
 	raw := append(hdr, body...)
 	sni, err := parseSNI(body)
@@ -109,6 +110,7 @@ func parseSNI(b []byte) (string, error) {
 		if len(ext) < listLen {
 			return "", errors.New("short SNI list body")
 		}
+		ext = ext[:listLen]
 		for len(ext) >= 3 {
 			nameType := ext[0]
 			nameLen := int(binary.BigEndian.Uint16(ext[1:]))
