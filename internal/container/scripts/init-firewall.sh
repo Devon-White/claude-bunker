@@ -86,6 +86,71 @@ IPSET_LIVE="$IPSET_NAME"
 ipset create "$IPSET_LIVE" hash:net 2>/dev/null || ipset flush "$IPSET_LIVE"
 iptables -A OUTPUT -m set --match-set "$IPSET_LIVE" dst -j ACCEPT
 
+# The domains file path is passed as $1 by the Go binary, keeping Go as the
+# single source of truth. Fall back to the conventional path for manual runs.
+# Determined here (rather than at first use below) because the egress proxy
+# launched next also needs it for its own --allowlist.
+DOMAINS_FILE="${1:-/tmp/.bunker-domains}"
+if [ ! -f "$DOMAINS_FILE" ]; then
+    echo "FATAL: $DOMAINS_FILE not found"
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# SNI-aware egress proxy: start it, then transparently REDIRECT agent TCP/443
+# to it. The proxy re-checks the allowlist by TLS SNI (closing the domain-
+# fronting gap the ipset /24 tier cannot see) and, when a masking config is
+# present, terminates the auth hosts to inject real credentials. The proxy's
+# own egress (uid 1001) skips the REDIRECT and is filtered by the ipset tier.
+#
+# Skipped entirely when an upstream corporate proxy is configured (HTTPS_PROXY/
+# https_proxy) — the agent's TLS traffic is already going through that proxy,
+# so redirecting 443 into our own SNI proxy here would double-proxy it.
+# ---------------------------------------------------------------------------
+PROXY_BIN="/usr/local/bin/egress-proxy"
+PROXY_PORT="15443"
+PROXY_UID="1001"
+MASKING_CONFIG="/etc/claude-bunker/proxy/masking.json"
+PROXY_CA_DIR="/etc/claude-bunker/proxy/ca"
+PROXY_CA_CERT="/etc/claude-bunker/proxy/ca/ca.pem"
+SNI_PROXY_ACTIVE=0
+
+if [ -z "${HTTPS_PROXY:-}${https_proxy:-}" ] && [ -x "$PROXY_BIN" ]; then
+    mkdir -p "$PROXY_CA_DIR"
+    chown -R "$PROXY_UID:$PROXY_UID" /etc/claude-bunker/proxy 2>/dev/null || true
+
+    PROXY_ARGS="--listen 127.0.0.1:$PROXY_PORT --allowlist $DOMAINS_FILE --ca-dir $PROXY_CA_DIR"
+    if [ -f "$MASKING_CONFIG" ]; then
+        PROXY_ARGS="$PROXY_ARGS --masking $MASKING_CONFIG"
+    fi
+
+    # Launch as the dedicated non-root proxy user.
+    runuser -u bunker-proxy -- env nohup "$PROXY_BIN" $PROXY_ARGS >/tmp/egress-proxy.log 2>&1 &
+
+    # Wait up to 5s for the listener.
+    for _ in $(seq 1 50); do
+        if (exec 3<>/dev/tcp/127.0.0.1/$PROXY_PORT) 2>/dev/null; then
+            exec 3>&- 2>/dev/null || true
+            break
+        fi
+        sleep 0.1
+    done
+
+    # If masking is active, install the proxy CA so terminated hosts are trusted.
+    if [ -f "$MASKING_CONFIG" ] && [ -f "$PROXY_CA_CERT" ]; then
+        cp "$PROXY_CA_CERT" /usr/local/share/ca-certificates/bunker-egress-ca.crt
+        update-ca-certificates >/dev/null 2>&1 || true
+    fi
+
+    # Transparent REDIRECT: proxy's own egress (owner) returns; everything else
+    # on 443 is redirected to the local proxy.
+    iptables -t nat -A OUTPUT -p tcp --dport 443 -m owner --uid-owner 1001 -j RETURN
+    iptables -t nat -A OUTPUT -p tcp --dport 443 -j REDIRECT --to-ports 15443
+    SNI_PROXY_ACTIVE=1
+else
+    echo "egress proxy skipped (upstream proxy set or binary missing)"
+fi
+
 # ---------------------------------------------------------------------------
 # IPv6: default-deny immediately to prevent bypassing the IPv4 firewall
 # ---------------------------------------------------------------------------
@@ -138,14 +203,6 @@ resolve_and_allow() {
 # silently ignored by the kernel. The critical domain is resolved first
 # (sequentially) to fail fast on fundamental network issues.
 # ---------------------------------------------------------------------------
-
-# The domains file path is passed as $1 by the Go binary, keeping Go as the
-# single source of truth. Fall back to the conventional path for manual runs.
-DOMAINS_FILE="${1:-/tmp/.bunker-domains}"
-if [ ! -f "$DOMAINS_FILE" ]; then
-    echo "FATAL: $DOMAINS_FILE not found"
-    exit 1
-fi
 
 # Determine critical domain: first '!'-prefixed entry in the domains file,
 # or api.anthropic.com as a safe fallback.
@@ -218,5 +275,24 @@ if [ "${BUNKER_VERBOSE:-0}" = "1" ]; then
         echo "Verified: api.anthropic.com is reachable"
     else
         echo "WARNING: api.anthropic.com is not reachable (may be a transient DNS issue)"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# SNI self-test: prove the proxy blocks a non-allowlisted SNI even when the
+# destination IP is inside an allowlisted /24. Force-resolve a bogus hostname
+# onto an allowlisted IP; the proxy must refuse it (curl fails). Only runs
+# when the SNI proxy tier was actually brought up above (skipped when an
+# upstream proxy was configured or the binary is missing).
+# ---------------------------------------------------------------------------
+if [ "$SNI_PROXY_ACTIVE" = "1" ] && [ -x "$PROXY_BIN" ]; then
+    ALLOWED_IP=$(ipset list "$IPSET_NAME" 2>/dev/null | awk '/^[0-9]/{print $1; exit}' | cut -d/ -f1)
+    if [ -n "$ALLOWED_IP" ]; then
+        if curl --connect-timeout 3 --max-time 5 --resolve "fronting.invalid:443:$ALLOWED_IP" \
+            https://fronting.invalid/ >/dev/null 2>&1; then
+            echo "ERROR: SNI self-test failed — domain-fronting to $ALLOWED_IP was NOT blocked"
+            exit 1
+        fi
+        echo "Verified: domain-fronting blocked by the SNI proxy"
     fi
 fi
