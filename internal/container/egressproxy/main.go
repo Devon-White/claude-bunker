@@ -62,10 +62,10 @@ func handle(conn net.Conn, al *Allowlist, rules []MaskRule, dialPort string, ca 
 		conn.Close() // fail closed
 		return
 	}
-	if rule := matchRule(rules, sni); rule != nil && ca != nil {
+	if ms := matchRules(rules, sni); len(ms) > 0 && ca != nil {
 		// readClientHello above already consumed the ClientHello record off
 		// the socket; replay it so terminate's TLS handshake reader sees it.
-		terminate(&prefixConn{Conn: conn, prefix: raw}, sni, rule, dialPort, ca)
+		terminate(&prefixConn{Conn: conn, prefix: raw}, sni, ms, dialPort, ca)
 		return
 	}
 	splice(conn, sni, string(raw), dialPort)

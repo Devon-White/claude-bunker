@@ -38,9 +38,16 @@ func (c *prefixConn) Read(b []byte) (int, error) {
 }
 
 // terminate accepts the client's TLS using a leaf minted for sni, reads each
-// HTTP/1.1 request, swaps the sentinel for the real secret, and forwards over a
-// genuine TLS connection to the real upstream. Responses stream back verbatim.
-func terminate(client net.Conn, sni string, rule *MaskRule, dialPort string, ca *certAuthority) {
+// HTTP/1.1 request, swaps every rule's sentinel for its real secret, and
+// forwards over a genuine TLS connection to the real upstream. Responses
+// stream back verbatim.
+//
+// rules holds every masking rule for this host (a host can carry more than
+// one credential, e.g. api.anthropic.com has separate rules for the API-key
+// and OAuth-token sentinels). Each request only carries one of them, so every
+// rule is applied per request — applyMask leaves non-matching values intact,
+// so applying all rules is safe even though only one will ever actually swap.
+func terminate(client net.Conn, sni string, rules []MaskRule, dialPort string, ca *certAuthority) {
 	defer client.Close()
 	leaf, err := ca.leafFor(sni)
 	if err != nil {
@@ -66,7 +73,9 @@ func terminate(client net.Conn, sni string, rule *MaskRule, dialPort string, ca 
 		if err != nil {
 			return
 		}
-		applyMask(req.Header, rule)
+		for i := range rules {
+			applyMask(req.Header, &rules[i])
+		}
 		req.URL.Scheme = ""
 		req.URL.Host = ""
 		if err := req.Write(upstream); err != nil {

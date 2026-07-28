@@ -6,16 +6,23 @@ import (
 	"strings"
 )
 
-// matchRule returns the first rule whose Hosts include host, or nil.
-func matchRule(rules []MaskRule, host string) *MaskRule {
+// matchRules returns ALL rules whose Hosts include host (case-insensitive).
+// A single host can carry multiple credentials (e.g. api.anthropic.com gets
+// separate rules for the API-key sentinel and the OAuth-token sentinel), and
+// a given request only carries one of them — so every rule for the host must
+// be tried, not just the first match, or the non-first credential's sentinel
+// is never swapped back to the real secret.
+func matchRules(rules []MaskRule, host string) []MaskRule {
+	var matched []MaskRule
 	for i := range rules {
 		for _, h := range rules[i].Hosts {
 			if strings.EqualFold(h, host) {
-				return &rules[i]
+				matched = append(matched, rules[i])
+				break
 			}
 		}
 	}
-	return nil
+	return matched
 }
 
 // applyMask replaces the rule's sentinel with the real secret in the configured
