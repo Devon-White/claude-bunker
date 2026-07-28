@@ -1,9 +1,0 @@
-{
-  "id": "hardening",
-  "version": "0.1.0",
-  "name": "claude-bunker hardening",
-  "description": "Installs bubblewrap (Claude Code's inner sandbox) and relaxes AppArmor so bwrap can create user namespaces. NOTE: the custom seccomp profile cannot be shipped in a Feature (host-resolved) — it is applied via runArgs in the generated devcontainer.json.",
-  "documentationURL": "https://github.com/Devon-White/claude-bunker/tree/main/features/src/hardening",
-  "securityOpt": ["apparmor=unconfined"],
-  "installsAfter": ["ghcr.io/devcontainers/features/common-utils"]
-}
