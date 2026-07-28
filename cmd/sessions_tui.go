@@ -259,13 +259,17 @@ func (m sessionsModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if err := mgrRef.StartContainer(ctx, containerID); err != nil {
 					return actionErrorMsg{err: fmt.Errorf("start %s: %w", c.DisplayName, err)}
 				}
-				// Re-inject auth secrets lost when the container stopped (tmpfs
-				// does not survive a stop/start). This does NOT re-run
-				// RunPostStart, so the firewall and egress proxy are not
-				// reinitialized on this restart path — a known limitation; see
-				// reinjectOnStart's doc comment.
+				// A restart clears the firewall, kills the egress proxy, and wipes
+				// the /run/secrets tmpfs. Rebuild the firewall + proxy and re-inject
+				// auth. Fail-closed: if re-hardening fails, stop the container
+				// rather than leave it running with unrestricted egress.
 				if cliRef != nil {
-					reinjectOnStart(ctx, cliRef, containerID)
+					if err := reinjectOnStart(ctx, cliRef, containerID); err != nil {
+						if stopErr := mgrRef.StopContainer(ctx, containerID); stopErr != nil {
+							return actionErrorMsg{err: fmt.Errorf("re-hardening %s failed AND stop failed — container may still be running with an open firewall (re-hardening: %v; stop: %v)", c.DisplayName, err, stopErr)}
+						}
+						return actionErrorMsg{err: fmt.Errorf("re-hardening %s failed; container stopped for safety: %w", c.DisplayName, err)}
+					}
 				}
 				snap, err := mgrRef.FetchSnapshot(ctx)
 				if err != nil {
@@ -498,26 +502,21 @@ func teardownAfterSession(ctx context.Context, cli *client.Client, containerID, 
 	_ = cli.ContainerStop(ctx, containerID, dockercontainer.StopOptions{Timeout: &timeout})
 }
 
-// reinjectOnStart re-injects auth secrets after starting a stopped container.
-// Secrets live on tmpfs which is lost when the container stops.
-//
-// maskActive is always false here: this path only calls Docker's bare
-// ContainerStart (see Manager.StartContainer) and never re-runs
-// RunPostStart/init-firewall.sh, so the bunker egress proxy is not relaunched
-// for the restarted container. Masking cannot be functionally active without
-// a running proxy to swap sentinels back to real secrets, so this must
-// always inject real tokens and must never claim CA trust
-// (NODE_EXTRA_CA_CERTS) for a proxy that isn't running.
-func reinjectOnStart(ctx context.Context, cli *client.Client, containerID string) {
-	// Re-inject auth from environment (same precedence as cmd/run.go).
+// reinjectOnStart re-hardens a container that was stopped and restarted: a
+// restart clears the firewall (iptables), kills the egress-proxy process, and
+// wipes the /run/secrets tmpfs. It delegates to container.ReinitOnRestart, which
+// re-runs init-firewall.sh against the persisted allowlist (rebuilding the
+// firewall and relaunching the proxy) and re-injects auth as sentinels (when
+// masking is active) or real tokens. It returns an error on failure so the
+// caller can stop the container rather than leave it running with open egress.
+func reinjectOnStart(ctx context.Context, cli *client.Client, containerID string) error {
+	// Auth comes from the environment (the TUI has no project config context).
 	auth := ctr.AuthTokens{
 		ApiKey:     os.Getenv("ANTHROPIC_API_KEY"),
 		OAuthToken: os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"),
 		GhToken:    os.Getenv("GITHUB_TOKEN"),
 	}
-	if auth.HasSecrets() {
-		_ = ctr.InjectAuthSecrets(ctx, cli, containerID, auth, false)
-	}
+	return ctr.ReinitOnRestart(ctx, cli, containerID, auth)
 }
 
 // handleConfirm processes y/n input during a confirmation prompt.
@@ -552,8 +551,16 @@ func (m sessionsModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if err := mgrRef.StartContainer(context.Background(), containerID); err != nil {
 					return actionErrorMsg{err: fmt.Errorf("start %s: %w", displayName, err)}
 				}
+				// Rebuild the firewall + egress proxy and re-inject auth (a restart
+				// clears all three). Fail-closed: stop the container if re-hardening
+				// fails rather than leave it with unrestricted egress.
 				if cliRef != nil {
-					reinjectOnStart(context.Background(), cliRef, containerID)
+					if err := reinjectOnStart(context.Background(), cliRef, containerID); err != nil {
+						if stopErr := mgrRef.StopContainer(context.Background(), containerID); stopErr != nil {
+							return actionErrorMsg{err: fmt.Errorf("re-hardening %s failed AND stop failed — container may still be running with an open firewall (re-hardening: %v; stop: %v)", displayName, err, stopErr)}
+						}
+						return actionErrorMsg{err: fmt.Errorf("re-hardening %s failed; container stopped for safety: %w", displayName, err)}
+					}
 				}
 				snap, err := mgrRef.FetchSnapshot(context.Background())
 				if err != nil {

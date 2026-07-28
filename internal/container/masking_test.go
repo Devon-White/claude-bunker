@@ -6,6 +6,28 @@ import (
 	"testing"
 )
 
+func TestEnvContainsProxy(t *testing.T) {
+	cases := []struct {
+		name string
+		env  []string
+		want bool
+	}{
+		{"none", []string{"PATH=/usr/bin", "DEVCONTAINER=true"}, false},
+		{"https upper set", []string{"HTTPS_PROXY=http://proxy:3128"}, true},
+		{"https lower set", []string{"https_proxy=http://proxy:3128"}, true},
+		{"https set empty", []string{"HTTPS_PROXY="}, false},
+		{"only http proxy (not https)", []string{"HTTP_PROXY=http://proxy:3128"}, false},
+		{"nil env", nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := envContainsProxy(c.env); got != c.want {
+				t.Errorf("envContainsProxy(%v)=%v want %v", c.env, got, c.want)
+			}
+		})
+	}
+}
+
 func TestBuildMaskRulesSplitsSecrets(t *testing.T) {
 	auth := AuthTokens{ApiKey: "sk-ant-REAL", OAuthToken: "oauth-REAL", GhToken: "ghp_REAL"}
 	rules, sentinels := BuildMaskRules(auth)

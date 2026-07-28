@@ -72,7 +72,11 @@ func generateCA(dir, certPath, keyPath string) (*certAuthority, error) {
 		SerialNumber:          big.NewInt(time.Now().UnixNano()),
 		Subject:               pkix.Name{CommonName: "claude-bunker egress CA"},
 		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(24 * time.Hour),
+		// Long-lived: this ephemeral per-container CA persists in the writable
+		// layer and is reused when a stopped container is restarted (possibly
+		// days later). A short validity would make masked-host TLS fail after an
+		// idle resume. It never leaves the container and dies with it.
+		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
@@ -117,7 +121,10 @@ func (c *certAuthority) leafFor(host string) (*tls.Certificate, error) {
 		Subject:      pkix.Name{CommonName: host},
 		DNSNames:     []string{host},
 		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(24 * time.Hour),
+		// Generous validity so a leaf cached for a long-running or idle-then-
+		// resumed proxy process doesn't expire mid-session (well under any
+		// public-CA policy cap, far over any container lifetime).
+		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}

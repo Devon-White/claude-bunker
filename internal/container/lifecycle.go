@@ -481,6 +481,104 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 	return nil
 }
 
+// ReinitOnRestart re-establishes the firewall, egress proxy, and auth secrets
+// for a container that was stopped and then restarted (e.g. from the sessions
+// TUI). A restart clears all iptables rules, kills the exec-launched egress
+// proxy process, and wipes the /run/secrets tmpfs — but the domain allowlist
+// (DomainsFilePath), the masking config, and the per-container CA persist in the
+// writable layer (only /run/secrets and a few workspace paths are tmpfs). So a
+// bare `docker start` would leave the container running with NO firewall and NO
+// proxy (unrestricted egress). This re-runs init-firewall.sh against the
+// persisted allowlist — rebuilding the firewall and relaunching the proxy — and
+// re-injects the agent's auth: sentinels when masking is active, else the real
+// tokens.
+//
+// The masking decision is derived from the CONTAINER's own environment (not the
+// host's), so it stays in lockstep with init-firewall.sh, which stands the proxy
+// down when the container was created with an upstream HTTPS_PROXY. When masking
+// is not active, any masking config left over from a prior masked start is
+// removed so the relaunched proxy runs Tier-1 (splice) and does not expect
+// sentinels the agent won't have.
+//
+// Fail-closed: if the persisted domains file is missing (so the firewall can't
+// be safely rebuilt) it returns an error, and the caller MUST stop the container
+// rather than leave it running with open egress.
+func ReinitOnRestart(ctx context.Context, cli *client.Client, containerID string, auth AuthTokens) error {
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	// Fail-closed: the persisted domain allowlist must exist to rebuild the
+	// firewall. Without it, init-firewall.sh would abort and egress would be
+	// left in whatever state the restart produced.
+	if _, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
+		[]string{"test", "-f", DomainsFilePath}); err != nil {
+		return fmt.Errorf("persisted domains file %s missing; cannot rebuild firewall: %w", DomainsFilePath, err)
+	}
+
+	// Derive the masking decision from the container's own env so it matches
+	// init-firewall.sh's proxy-run decision (which reads the container's
+	// HTTPS_PROXY). Using the host env here could disagree with the script and
+	// leave sentinels with no proxy to swap them.
+	inspect, err := cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return fmt.Errorf("inspecting container: %w", err)
+	}
+	maskActive := ShouldMask(auth, envContainsProxy(inspect.Config.Env))
+
+	// The masking config must be in place BEFORE init-firewall.sh launches the
+	// proxy (the proxy reads it at startup).
+	authToInject := auth
+	if maskActive {
+		sentinelAuth, err := PrepareMasking(ctx, cli, containerID, auth)
+		if err != nil {
+			return fmt.Errorf("prepare masking: %w", err)
+		}
+		authToInject = sentinelAuth
+	} else {
+		// Drop any masking config from a prior masked start so the relaunched
+		// proxy runs Tier-1 (splice) rather than expecting sentinels.
+		if _, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
+			[]string{"rm", "-f", MaskingConfigPath}); err != nil {
+			return fmt.Errorf("clearing stale masking config: %w", err)
+		}
+	}
+
+	// Rebuild the firewall and relaunch the egress proxy from the persisted
+	// allowlist. init-firewall.sh sets DROP policies before anything else, so
+	// egress stays locked down even if a later step in the script fails.
+	if _, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
+		[]string{FirewallScriptPath, DomainsFilePath}); err != nil {
+		return fmt.Errorf("re-running init-firewall.sh: %w", err)
+	}
+
+	// Relaunch the background firewall-refresh daemon. Like the proxy, it is
+	// exec-launched and died with the container on stop; without it the ipset
+	// goes stale as CDN/cloud IPs rotate. Non-fatal: the firewall is already up.
+	if _, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
+		[]string{"sh", "-c", fmt.Sprintf("nohup '%s' '%s' >/dev/null 2>&1 &", RefreshFirewallScriptPath, DomainsFilePath)}); err != nil {
+		log.Warnf("relaunching firewall refresh daemon on restart: %v", err)
+	}
+
+	// Re-inject the agent's auth (sentinels when masking, else real) + wrapper.
+	if err := InjectAuthSecrets(ctx, cli, containerID, authToInject, maskActive); err != nil {
+		return fmt.Errorf("re-injecting auth: %w", err)
+	}
+	return nil
+}
+
+// envContainsProxy reports whether a container env slice (entries of the form
+// "KEY=value") sets a non-empty HTTPS_PROXY or https_proxy.
+func envContainsProxy(env []string) bool {
+	for _, e := range env {
+		for _, key := range []string{"HTTPS_PROXY=", "https_proxy="} {
+			if strings.HasPrefix(e, key) && len(e) > len(key) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // InjectAuthSecrets injects authentication tokens into the container via tmpfs.
 // Tokens are stored as files in /run/secrets/ (never as environment variables)
 // so they don't appear in docker inspect or /proc/*/environ.
