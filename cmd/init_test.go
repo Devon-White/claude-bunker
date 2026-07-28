@@ -196,6 +196,38 @@ func TestWriteDevContainer_WritesDockerfile(t *testing.T) {
 	}
 }
 
+// TestWriteDevContainer_BakesEgressProxy locks in Tier-1 protection for the
+// portable (VS Code/Codespaces) path: the committed Dockerfile must build the
+// multi-stage egress proxy, and the egressproxy/ source it COPYs must actually
+// be written into the bundle so that COPY resolves. No masking config is
+// written here — portable is Tier 1 (splice/allowlist) only.
+func TestWriteDevContainer_BakesEgressProxy(t *testing.T) {
+	ws := t.TempDir()
+	if err := writeDevContainer(ws, config.ProjectConfig{}); err != nil {
+		t.Fatalf("writeDevContainer: %v", err)
+	}
+
+	df, err := os.ReadFile(filepath.Join(ws, ".devcontainer", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("Dockerfile missing: %v", err)
+	}
+	if !strings.Contains(string(df), "AS proxybuild") || !strings.Contains(string(df), "COPY egressproxy/") {
+		t.Error("committed Dockerfile does not build the egress proxy")
+	}
+
+	if _, err := os.Stat(filepath.Join(ws, ".devcontainer", "egressproxy", "main.go")); err != nil {
+		t.Errorf("egressproxy/main.go not written into bundle: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".devcontainer", "egressproxy", "go.mod")); err != nil {
+		t.Errorf("egressproxy/go.mod not written into bundle: %v", err)
+	}
+
+	// No masking config in the portable bundle (Tier 1 only).
+	if _, err := os.Stat(filepath.Join(ws, ".devcontainer", "masking.json")); !os.IsNotExist(err) {
+		t.Errorf("portable bundle must not include masking.json, stat err = %v", err)
+	}
+}
+
 // TestWriteDevContainer_WritesFirewallScripts locks in that the 3 firewall
 // scripts written alongside the Dockerfile are byte-identical to bunker's
 // canonical container.BuildContextScripts() entries (no drift/copy-paste),

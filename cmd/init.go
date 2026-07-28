@@ -645,6 +645,23 @@ func writeDevContainer(workspace string, cfg config.ProjectConfig) error {
 		success("Saved " + scriptPath)
 	}
 
+	// egressproxy/ source: GenerateBaseDockerfile()'s multi-stage build (Task 6)
+	// COPYs egressproxy/ and compiles it in a proxybuild stage, so the source
+	// must live in the build context for VS Code's image build to resolve it.
+	// No masking config is written here — the portable bundle is Tier 1 only
+	// (splice/allowlist); init-firewall.sh (Task 7) starts the proxy without a
+	// CA when it finds no masking.json.
+	for _, f := range container.EgressProxySources() {
+		dest := filepath.Join(dir, filepath.FromSlash(f.Name)) // egressproxy/<name>
+		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+			return fmt.Errorf("creating %s dir: %w", f.Name, err)
+		}
+		if err := os.WriteFile(dest, f.Content, f.Mode); err != nil {
+			return fmt.Errorf("writing %s: %w", f.Name, err)
+		}
+	}
+	success(fmt.Sprintf("Saved %s (%d files)", filepath.Join(dir, "egressproxy"), len(container.EgressProxySources())))
+
 	domains := strings.Join(append(container.BuiltinDomains(), cfg.AllowDomains...), "\n") + "\n"
 	domainsPath := filepath.Join(dir, "allowed-domains.txt")
 	if err := os.WriteFile(domainsPath, []byte(domains), 0o644); err != nil {
