@@ -119,13 +119,16 @@ if [ -z "${HTTPS_PROXY:-}${https_proxy:-}" ] && [ -x "$PROXY_BIN" ]; then
     mkdir -p "$PROXY_CA_DIR"
     chown -R "$PROXY_UID:$PROXY_UID" /etc/claude-bunker/proxy 2>/dev/null || true
 
-    PROXY_ARGS="--listen 127.0.0.1:$PROXY_PORT --allowlist $DOMAINS_FILE --ca-dir $PROXY_CA_DIR"
+    # Built as an array (not a space-joined string) because this script sets
+    # IFS=$'\n\t' globally — unquoted expansion of a plain string would not
+    # word-split on spaces and the proxy would receive one giant argument.
+    PROXY_ARGS=(--listen "127.0.0.1:$PROXY_PORT" --allowlist "$DOMAINS_FILE" --ca-dir "$PROXY_CA_DIR")
     if [ -f "$MASKING_CONFIG" ]; then
-        PROXY_ARGS="$PROXY_ARGS --masking $MASKING_CONFIG"
+        PROXY_ARGS+=(--masking "$MASKING_CONFIG")
     fi
 
     # Launch as the dedicated non-root proxy user.
-    runuser -u bunker-proxy -- env nohup "$PROXY_BIN" $PROXY_ARGS >/tmp/egress-proxy.log 2>&1 &
+    runuser -u bunker-proxy -- env nohup "$PROXY_BIN" "${PROXY_ARGS[@]}" >/tmp/egress-proxy.log 2>&1 &
 
     # Wait up to 5s for the listener.
     for _ in $(seq 1 50); do
