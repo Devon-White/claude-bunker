@@ -12,8 +12,13 @@ import (
 
 // bunkerManagedFeaturePrefixes are OCI feature refs bunker provides itself
 // (native install / its own engine) and therefore strips from the engine's
-// ProjectConfig on read. They remain in the file only for the portable
-// (VS Code / Codespaces) build.
+// ProjectConfig on read. Generate no longer emits any of these into the
+// devcontainer.json it writes (the committed Dockerfile bakes in the
+// firewall/hardening and installs Claude Code + creates the user natively —
+// see internal/devcontainer/generate.go), so in practice this list is now a
+// defensive no-op: it only matters if a user hand-adds one of these refs to
+// their own devcontainer.json, in which case it's still stripped rather than
+// double-applied.
 var bunkerManagedFeaturePrefixes = []string{
 	"ghcr.io/anthropics/devcontainer-features/claude-code",
 	"ghcr.io/Devon-White/claude-bunker/firewall",
@@ -67,5 +72,26 @@ func LoadProjectConfig(workspace string) (config.ProjectConfig, bool, error) {
 
 	cfg := ToProjectConfig(dc)
 	cfg.Features = stripBunkerFeatures(cfg.Features)
+	cfg.PostStartCommand = stripBunkerPostStart(cfg.PostStartCommand)
 	return cfg, true, nil
+}
+
+// stripBunkerPostStart removes the firewall bootstrap Generate always emits
+// into postStartCommand (see firewallPostStartCommand in generate.go),
+// leaving only a user's own postStartCommand (if any). This is required for
+// correctness: bunker's own native RunPostStart already execs the firewall
+// directly as root (internal/container/lifecycle.go), and the BAKED
+// allowlist path the bootstrap targets isn't even present in bunker's native
+// image (only the portable Dockerfile COPYs it in). Without this strip,
+// bunker's own postStart step would try to re-run the firewall against a
+// nonexistent file and fail outright.
+func stripBunkerPostStart(cmd string) string {
+	fw := firewallPostStartCommand()
+	if cmd == fw {
+		return ""
+	}
+	if rest, ok := strings.CutPrefix(cmd, fw+" && "); ok {
+		return rest
+	}
+	return cmd
 }

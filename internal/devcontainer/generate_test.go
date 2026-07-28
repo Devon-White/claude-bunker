@@ -8,7 +8,24 @@ import (
 	"testing"
 
 	"github.com/Devon-White/claude-bunker/internal/config"
+	"github.com/Devon-White/claude-bunker/internal/container"
 )
+
+// parseRawGenerated strips the GENERATED marker line and unmarshals the rest
+// as a plain map, for asserting on top-level JSON keys that DevContainer
+// doesn't model (e.g. build, runArgs) — Parse would silently drop them.
+func parseRawGenerated(t *testing.T, data []byte) map[string]any {
+	t.Helper()
+	body := data
+	if nl := bytes.IndexByte(body, '\n'); nl >= 0 {
+		body = body[nl+1:]
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("generated file is not valid JSON: %v", err)
+	}
+	return raw
+}
 
 func TestGenerate(t *testing.T) {
 	seed := false
@@ -19,7 +36,7 @@ func TestGenerate(t *testing.T) {
 		Env:          map[string]string{"NODE_ENV": "development"},
 		SeedHistory:  &seed,
 	}
-	data, err := Generate(cfg, GenerateOpts{Name: "demo (bunkered)", Image: "base:debian", ClaudeCodeFeature: "ghcr.io/anthropics/devcontainer-features/claude-code:1"})
+	data, err := Generate(cfg, GenerateOpts{Name: "demo (bunkered)"})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -43,9 +60,6 @@ func TestGenerate(t *testing.T) {
 	}
 	if _, ok := dc.Features["ghcr.io/devcontainers/features/node:1"]; !ok {
 		t.Errorf("user feature dropped: %+v", dc.Features)
-	}
-	if _, ok := dc.Features["ghcr.io/anthropics/devcontainer-features/claude-code:1"]; !ok {
-		t.Errorf("claude-code feature not added: %+v", dc.Features)
 	}
 	// Round-trip: the bunker extras survive back into ProjectConfig.
 	got := ToProjectConfig(dc)
@@ -85,46 +99,49 @@ func TestGenerate_KeepsEnvRefGhToken(t *testing.T) {
 	}
 }
 
-// TestGenerate_FirewallHardeningFeaturesAndRunArgs locks in VS Code
-// portability: when FirewallFeature/HardeningFeature are set, both refs land
-// in the features map (firewall carrying the allowDomains option so VS Code
-// gets the same allowlist), and runArgs carries the seccomp profile flag so
-// VS Code applies the same custom seccomp profile bunker uses natively.
-func TestGenerate_FirewallHardeningFeaturesAndRunArgs(t *testing.T) {
+// TestGenerate_BuildDockerfileNoImageNoHardeningFeatures locks in Phase 2c:
+// Generate emits build.dockerfile (VS Code builds the committed
+// .devcontainer/Dockerfile, which bakes in the firewall/hardening and
+// installs Claude Code natively) instead of image + OCI hardening Feature
+// refs. runArgs still carries the seccomp flag, and any user features (e.g.
+// apt-packages) are preserved.
+func TestGenerate_BuildDockerfileNoImageNoHardeningFeatures(t *testing.T) {
 	cfg := config.ProjectConfig{
 		AllowDomains: []string{"registry.npmjs.org", "github.com"},
+		Features: map[string]map[string]any{
+			"ghcr.io/rocker-org/devcontainer-features/apt-packages:1": {"packages": "jq"},
+		},
 	}
-	data, err := Generate(cfg, GenerateOpts{
-		FirewallFeature:  "ghcr.io/Devon-White/claude-bunker/firewall:0",
-		HardeningFeature: "ghcr.io/Devon-White/claude-bunker/hardening:0",
-	})
+	data, err := Generate(cfg, GenerateOpts{})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
+	raw := parseRawGenerated(t, data)
 
-	// Strip the leading GENERATED marker line before decoding as plain JSON.
-	body := data
-	if nl := bytes.IndexByte(body, '\n'); nl >= 0 {
-		body = body[nl+1:]
+	build, ok := raw["build"].(map[string]any)
+	if !ok {
+		t.Fatalf("build missing or wrong type: %+v", raw["build"])
 	}
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		t.Fatalf("generated file is not valid JSON: %v", err)
+	if build["dockerfile"] != "Dockerfile" {
+		t.Errorf(`build.dockerfile = %v, want "Dockerfile"`, build["dockerfile"])
+	}
+	if _, ok := raw["image"]; ok {
+		t.Errorf("image must NOT be emitted when build.dockerfile is used: %+v", raw["image"])
 	}
 
-	features, ok := raw["features"].(map[string]any)
-	if !ok {
-		t.Fatalf("features missing or wrong type: %+v", raw["features"])
+	features, _ := raw["features"].(map[string]any)
+	for _, ref := range []string{
+		"ghcr.io/anthropics/devcontainer-features/claude-code:1",
+		"ghcr.io/Devon-White/claude-bunker/firewall:0",
+		"ghcr.io/Devon-White/claude-bunker/hardening:0",
+		"ghcr.io/devcontainers/features/common-utils:2",
+	} {
+		if _, ok := features[ref]; ok {
+			t.Errorf("hardening feature ref %q must not be emitted; the Dockerfile does this natively", ref)
+		}
 	}
-	fw, ok := features["ghcr.io/Devon-White/claude-bunker/firewall:0"].(map[string]any)
-	if !ok {
-		t.Fatalf("firewall feature ref missing: %+v", features)
-	}
-	if fw["allowDomains"] != "registry.npmjs.org,github.com" {
-		t.Errorf("firewall allowDomains = %v, want joined allowlist", fw["allowDomains"])
-	}
-	if _, ok := features["ghcr.io/Devon-White/claude-bunker/hardening:0"]; !ok {
-		t.Errorf("hardening feature ref missing: %+v", features)
+	if _, ok := features["ghcr.io/rocker-org/devcontainer-features/apt-packages:1"]; !ok {
+		t.Errorf("user apt-packages feature dropped: %+v", features)
 	}
 
 	runArgs, ok := raw["runArgs"].([]any)
@@ -137,72 +154,47 @@ func TestGenerate_FirewallHardeningFeaturesAndRunArgs(t *testing.T) {
 	}
 }
 
-// TestGenerate_CommonUtilsFeature locks in the VS Code user-resolution fix:
-// when CommonUtilsFeature is set, it lands in the features map configured to
-// create the claude-bunker user (uid/gid 1000, matching bunker's native base
-// image user) so remoteUser: claude-bunker actually resolves on the VS
-// Code / Codespaces path, and the created user gets passwordless sudo (which
-// the firewall Feature's postStart needs).
-func TestGenerate_CommonUtilsFeature(t *testing.T) {
-	data, err := Generate(config.ProjectConfig{}, GenerateOpts{
-		CommonUtilsFeature: "ghcr.io/devcontainers/features/common-utils:2",
-	})
+// TestGenerate_PostStartRunsFirewallAgainstBakedAllowlist locks in the
+// SECURITY-critical path: the generated postStartCommand must run the
+// firewall via sudo against the BAKED root-owned allowlist path
+// (container.AllowedDomainsPath), NOT a workspace-writable copy — this must
+// match the arg-pinned sudoers grant exactly (same script path + same
+// domains path) or sudo denies it, and using the workspace copy would let a
+// sandboxed agent widen its own firewall allowlist.
+func TestGenerate_PostStartRunsFirewallAgainstBakedAllowlist(t *testing.T) {
+	data, err := Generate(config.ProjectConfig{}, GenerateOpts{})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-
-	body := data
-	if nl := bytes.IndexByte(body, '\n'); nl >= 0 {
-		body = body[nl+1:]
-	}
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		t.Fatalf("generated file is not valid JSON: %v", err)
-	}
-
-	features, ok := raw["features"].(map[string]any)
+	raw := parseRawGenerated(t, data)
+	cmd, ok := raw["postStartCommand"].(string)
 	if !ok {
-		t.Fatalf("features missing or wrong type: %+v", raw["features"])
+		t.Fatalf("postStartCommand missing or wrong type: %+v", raw["postStartCommand"])
 	}
-	cu, ok := features["ghcr.io/devcontainers/features/common-utils:2"].(map[string]any)
-	if !ok {
-		t.Fatalf("common-utils feature ref missing: %+v", features)
+	if !strings.HasPrefix(cmd, "sudo "+container.FirewallScriptPath+" "+container.AllowedDomainsPath) {
+		t.Errorf("postStartCommand must sudo-run the firewall against the baked allowlist first, got %q", cmd)
 	}
-	if cu["username"] != "claude-bunker" {
-		t.Errorf("common-utils username = %v, want claude-bunker", cu["username"])
+	if !strings.Contains(cmd, "sudo "+container.RefreshFirewallScriptPath+" "+container.AllowedDomainsPath) {
+		t.Errorf("postStartCommand must sudo-run the refresh daemon against the baked allowlist, got %q", cmd)
 	}
-	if cu["userUid"] != "1000" {
-		t.Errorf("common-utils userUid = %v, want 1000", cu["userUid"])
-	}
-	if cu["userGid"] != "1000" {
-		t.Errorf("common-utils userGid = %v, want 1000", cu["userGid"])
+	if strings.Contains(cmd, "containerWorkspaceFolder") || strings.Contains(cmd, ".devcontainer/allowed-domains.txt") {
+		t.Errorf("postStartCommand must NOT reference the agent-writable workspace copy of the allowlist, got %q", cmd)
 	}
 }
 
-// TestGenerate_FirewallFeatureNoAllowDomains confirms the firewall feature's
-// options object is empty (not carrying an empty-string allowDomains) when no
-// allowlist is configured, matching the "only include the option if
-// AllowDomains is non-empty" rule.
-func TestGenerate_FirewallFeatureNoAllowDomains(t *testing.T) {
-	data, err := Generate(config.ProjectConfig{}, GenerateOpts{
-		FirewallFeature: "ghcr.io/Devon-White/claude-bunker/firewall:0",
-	})
+// TestGenerate_PostStartAppendsUserCommandAfterFirewall verifies a project's
+// own postStartCommand still runs, but only AFTER the firewall is up.
+func TestGenerate_PostStartAppendsUserCommandAfterFirewall(t *testing.T) {
+	cfg := config.ProjectConfig{PostStartCommand: "npm install"}
+	data, err := Generate(cfg, GenerateOpts{})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	dc, err := Parse(data, nil)
-	if err != nil {
-		t.Fatalf("generated file does not re-parse: %v", err)
-	}
-	opts, ok := dc.Features["ghcr.io/Devon-White/claude-bunker/firewall:0"]
-	if !ok {
-		t.Fatalf("firewall feature ref missing: %+v", dc.Features)
-	}
-	m, ok := opts.(map[string]any)
-	if !ok {
-		t.Fatalf("firewall feature options wrong type: %+v", opts)
-	}
-	if _, present := m["allowDomains"]; present {
-		t.Errorf("allowDomains should be omitted when AllowDomains is empty, got %+v", m)
+	raw := parseRawGenerated(t, data)
+	cmd, _ := raw["postStartCommand"].(string)
+	fwIdx := strings.Index(cmd, container.FirewallScriptPath)
+	userIdx := strings.Index(cmd, "npm install")
+	if fwIdx == -1 || userIdx == -1 || userIdx < fwIdx {
+		t.Errorf("user postStartCommand must run AFTER the firewall bootstrap, got %q", cmd)
 	}
 }

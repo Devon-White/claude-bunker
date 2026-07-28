@@ -573,18 +573,14 @@ func mergeSettings(cfg map[string]any, s initSettings) {
 }
 
 // writeDevContainer generates .devcontainer/devcontainer.json from the wizard's
-// config and writes it. The generated file references the claude-code feature
-// and a portable base image for the VS Code path; bunker's own build ignores
-// the image and strips the feature (it installs Claude Code natively).
+// config and writes it. The generated file points build.dockerfile at the
+// sibling committed Dockerfile for the VS Code / Codespaces path; bunker's
+// own native build ignores build/runArgs entirely (its DevContainer struct
+// doesn't model them) and builds from its own embedded Dockerfile instead.
 func writeDevContainer(workspace string, cfg config.ProjectConfig) error {
 	name := filepath.Base(workspace) + " (bunkered)"
 	data, err := devcontainer.Generate(cfg, devcontainer.GenerateOpts{
-		Name:               name,
-		Image:              "mcr.microsoft.com/devcontainers/base:debian",
-		ClaudeCodeFeature:  "ghcr.io/anthropics/devcontainer-features/claude-code:1",
-		FirewallFeature:    "ghcr.io/Devon-White/claude-bunker/firewall:0",
-		HardeningFeature:   "ghcr.io/Devon-White/claude-bunker/hardening:0",
-		CommonUtilsFeature: "ghcr.io/devcontainers/features/common-utils:2",
+		Name: name,
 	})
 	if err != nil {
 		return fmt.Errorf("generating devcontainer.json: %w", err)
@@ -621,14 +617,17 @@ func writeDevContainer(workspace string, cfg config.ProjectConfig) error {
 	// The Dockerfile is bunker's own base image plus a suffix that bakes the
 	// firewall allowlist ROOT-OWNED and read-only: COPY makes it root:root,
 	// and chmod 0444 stops the sandboxed agent from widening it. This is the
-	// exact path the arg-pinned firewall sudo (Task 1) is pinned to.
+	// exact path the arg-pinned firewall sudo (Task 1) is pinned to. The
+	// suffix switches back to the non-root user at the end so the committed
+	// Dockerfile doesn't leave the image ending on USER root.
 	dockerfile := container.GenerateBaseDockerfile() + fmt.Sprintf(
 		"\n# Portable firewall allowlist (VS Code path): root-owned + read-only so the\n"+
 			"# sandboxed agent cannot widen it. The arg-pinned firewall sudo targets this path.\n"+
 			"COPY allowed-domains.txt %s\n"+
 			"USER root\n"+
-			"RUN chmod 0444 %s\n",
-		container.AllowedDomainsPath, container.AllowedDomainsPath)
+			"RUN chmod 0444 %s\n"+
+			"USER %s\n",
+		container.AllowedDomainsPath, container.AllowedDomainsPath, container.ContainerUser)
 	dockerfilePath := filepath.Join(dir, "Dockerfile")
 	if err := os.WriteFile(dockerfilePath, []byte(dockerfile), 0o644); err != nil {
 		return fmt.Errorf("writing Dockerfile: %w", err)

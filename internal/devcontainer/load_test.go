@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Devon-White/claude-bunker/internal/config"
 )
 
 func TestStripBunkerFeatures(t *testing.T) {
@@ -127,5 +129,84 @@ func TestLoadProjectConfig_StripsFirewallHardeningAndIgnoresRunArgs(t *testing.T
 	}
 	if _, ok := cfg.Features["ghcr.io/devcontainers/features/node:1"]; !ok {
 		t.Error("user feature must survive")
+	}
+}
+
+// TestStripBunkerPostStart proves the firewall bootstrap Generate emits into
+// postStartCommand strips back out cleanly, leaving only a user's real
+// command (if any). This is required for correctness, not just cosmetic:
+// bunker's own native RunPostStart already execs the firewall directly as
+// root (internal/container/lifecycle.go), and the BAKED allowlist path this
+// string targets (container.AllowedDomainsPath) isn't even COPY'd into
+// bunker's native image — only the portable Dockerfile written by
+// writeDevContainer has it. If this string reached RunPostStart's
+// postStartCommand step unstripped, it would sudo-exec the firewall against
+// a nonexistent file and fail the whole postStart.
+func TestStripBunkerPostStart(t *testing.T) {
+	fw := firewallPostStartCommand()
+	cases := map[string]string{
+		fw:                     "",
+		fw + " && npm install": "npm install",
+		"npm install":          "npm install",
+		"":                     "",
+	}
+	for in, want := range cases {
+		if got := stripBunkerPostStart(in); got != want {
+			t.Errorf("stripBunkerPostStart(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestLoadProjectConfig_StripsFirewallPostStart proves the strip is wired
+// into LoadProjectConfig itself: loading a Generate-produced file back
+// yields only the user's real postStartCommand, not the firewall bootstrap.
+func TestLoadProjectConfig_StripsFirewallPostStart(t *testing.T) {
+	ws := t.TempDir()
+	dir := filepath.Join(ws, ".devcontainer")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := Generate(config.ProjectConfig{PostStartCommand: "npm install"}, GenerateOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "devcontainer.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, found, err := LoadProjectConfig(ws)
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if got.PostStartCommand != "npm install" {
+		t.Errorf("PostStartCommand = %q, want the firewall bootstrap stripped, leaving just the user command", got.PostStartCommand)
+	}
+}
+
+// TestLoadProjectConfig_StripsFirewallPostStartWithNoUserCommand covers the
+// common case (no user postStartCommand at all): the generated file still
+// always carries the firewall bootstrap, and loading it back must yield an
+// empty PostStartCommand so bunker's native RunPostStart doesn't try to
+// re-run the firewall against a path that doesn't exist in its own image.
+func TestLoadProjectConfig_StripsFirewallPostStartWithNoUserCommand(t *testing.T) {
+	ws := t.TempDir()
+	dir := filepath.Join(ws, ".devcontainer")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := Generate(config.ProjectConfig{}, GenerateOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "devcontainer.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, found, err := LoadProjectConfig(ws)
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if got.PostStartCommand != "" {
+		t.Errorf("PostStartCommand = %q, want empty (firewall bootstrap fully stripped)", got.PostStartCommand)
 	}
 }

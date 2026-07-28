@@ -136,8 +136,10 @@ func TestWriteDevContainer_WritesSeccompProfile(t *testing.T) {
 		t.Errorf("seccomp.json content diverges from container.SeccompProfileJSON()")
 	}
 
-	// The devcontainer.json must reference the seccomp.json via runArgs, and
-	// list the firewall/hardening OCI feature refs (for VS Code/Codespaces).
+	// The devcontainer.json must reference the seccomp.json via runArgs, build
+	// from the sibling Dockerfile (no OCI hardening Feature refs — the
+	// Dockerfile does that natively), and bootstrap the firewall via
+	// postStartCommand against the baked allowlist path.
 	dcData, err := os.ReadFile(filepath.Join(ws, ".devcontainer", "devcontainer.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -145,11 +147,17 @@ func TestWriteDevContainer_WritesSeccompProfile(t *testing.T) {
 	if !bytes.Contains(dcData, []byte("seccomp=${localWorkspaceFolder}/.devcontainer/seccomp.json")) {
 		t.Error("devcontainer.json missing runArgs seccomp reference")
 	}
-	if !bytes.Contains(dcData, []byte("ghcr.io/Devon-White/claude-bunker/firewall:0")) {
-		t.Error("devcontainer.json missing firewall feature ref")
+	if !bytes.Contains(dcData, []byte(`"dockerfile": "Dockerfile"`)) {
+		t.Error("devcontainer.json missing build.dockerfile")
 	}
-	if !bytes.Contains(dcData, []byte("ghcr.io/Devon-White/claude-bunker/hardening:0")) {
-		t.Error("devcontainer.json missing hardening feature ref")
+	if bytes.Contains(dcData, []byte("ghcr.io/Devon-White/claude-bunker/firewall")) {
+		t.Error("devcontainer.json must not reference the firewall OCI feature (baked into the Dockerfile instead)")
+	}
+	if bytes.Contains(dcData, []byte("ghcr.io/Devon-White/claude-bunker/hardening")) {
+		t.Error("devcontainer.json must not reference the hardening OCI feature (baked into the Dockerfile instead)")
+	}
+	if !bytes.Contains(dcData, []byte("sudo "+container.FirewallScriptPath+" "+container.AllowedDomainsPath)) {
+		t.Error("devcontainer.json missing firewall postStartCommand against the baked allowlist")
 	}
 }
 
@@ -178,6 +186,13 @@ func TestWriteDevContainer_WritesDockerfile(t *testing.T) {
 	wantChmod := "chmod 0444 " + container.AllowedDomainsPath
 	if !strings.Contains(string(data), wantChmod) {
 		t.Errorf("Dockerfile missing %q", wantChmod)
+	}
+	// The suffix must switch back to the non-root user after the chmod so
+	// the committed Dockerfile doesn't end the image on USER root.
+	trimmed := strings.TrimRight(string(data), "\n")
+	wantTail := "USER " + container.ContainerUser
+	if !strings.HasSuffix(trimmed, wantTail) {
+		t.Errorf("Dockerfile must end with %q, got tail %q", wantTail, trimmed[max(0, len(trimmed)-40):])
 	}
 }
 
