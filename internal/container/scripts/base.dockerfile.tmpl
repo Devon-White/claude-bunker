@@ -68,9 +68,12 @@ COPY tmux.conf {{.Home}}/.tmux.conf
 RUN chmod +x {{.CommonFirewallPath}} {{.FirewallPath}} {{.RefreshFirewallPath}} && \
   chown {{.User}}:{{.User}} {{.Home}}/.tmux.conf
 
-# Scoped NOPASSWD sudo for exactly the firewall scripts — allows the VS Code
-# postStartCommand to run the firewall as the non-root user. bunker's native
-# build runs the firewall as root via docker-exec and never uses sudo, so
-# this grant is additive and harmless for that path.
-RUN echo '{{.User}} ALL=(root) NOPASSWD: {{.FirewallPath}}, {{.RefreshFirewallPath}}' > /etc/sudoers.d/claude-bunker-firewall && \
+# Scoped NOPASSWD sudo for exactly the firewall scripts, arg-pinned to the
+# fixed root-owned allowlist path — allows the VS Code postStartCommand to
+# run the firewall as the non-root user. sudo permits ONLY invocations with
+# exactly this argument, so a compromised agent cannot pass its own domains
+# file to widen the firewall. bunker's native build runs the firewall as
+# root via docker-exec and never uses sudo, so this grant is additive and
+# harmless for that path.
+RUN echo '{{.User}} ALL=(root) NOPASSWD: {{.FirewallPath}} {{.AllowedDomainsPath}}, {{.RefreshFirewallPath}} {{.AllowedDomainsPath}}' > /etc/sudoers.d/claude-bunker-firewall && \
   chmod 0440 /etc/sudoers.d/claude-bunker-firewall

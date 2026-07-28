@@ -18,6 +18,7 @@ type baseTemplateData struct {
 	CommonFirewallPath  string
 	FirewallPath        string
 	RefreshFirewallPath string
+	AllowedDomainsPath  string
 }
 
 // baseTmpl is parsed once at package init from the embedded template.
@@ -53,6 +54,7 @@ func generateBaseContent() string {
 		CommonFirewallPath:  CommonFirewallScriptPath,
 		FirewallPath:        FirewallScriptPath,
 		RefreshFirewallPath: RefreshFirewallScriptPath,
+		AllowedDomainsPath:  AllowedDomainsPath,
 	}
 
 	var b strings.Builder

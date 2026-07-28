@@ -32,6 +32,11 @@ const CommonFirewallScriptPath = "/usr/local/bin/firewall-common.sh"
 // domain list for init-firewall.sh to read.
 const DomainsFilePath = "/tmp/.bunker-domains"
 
+// AllowedDomainsPath is the root-owned firewall allowlist file baked into the
+// image for the portable (VS Code) path, referenced by the arg-pinned sudoers
+// grant so a non-root agent cannot point the firewall at its own domains file.
+const AllowedDomainsPath = "/etc/claude-bunker/allowed-domains.txt"
+
 // ContainerUserGroup is the "user:group" string used for chown operations.
 const ContainerUserGroup = ContainerUser + ":" + ContainerUser
 
