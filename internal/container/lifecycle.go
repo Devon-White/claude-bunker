@@ -599,8 +599,12 @@ func createAuthWrapper(script *strings.Builder, ug string, auth AuthTokens, mask
 	}
 	if maskActive {
 		// When credential masking is active the proxy terminates the auth
-		// hosts; Node/Claude Code must trust the per-container CA.
-		fmt.Fprintf(script, "export NODE_EXTRA_CA_CERTS=%q\n", ProxyCACertPath)
+		// hosts; Node/Claude Code must trust the per-container CA. Point at
+		// the world-readable system copy (ProxyCASystemPath) that
+		// init-firewall.sh installs via update-ca-certificates — NOT
+		// ProxyCACertPath, which lives under a 0700 dir owned by
+		// bunker-proxy (uid 1001) and is unreadable by the agent (uid 1000).
+		fmt.Fprintf(script, "export NODE_EXTRA_CA_CERTS=%q\n", ProxyCASystemPath)
 	}
 	script.WriteString("exec \"$@\"\n")
 	script.WriteString("WRAPPER_EOF\n")

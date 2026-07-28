@@ -20,3 +20,16 @@ func TestInitFirewallStartsProxyAndRedirects(t *testing.T) {
 		}
 	}
 }
+
+// TestInitFirewallInstallsCAAtSystemPath guards against the hardcoded system
+// CA path in init-firewall.sh drifting from the Go-side ProxyCASystemPath
+// constant that createAuthWrapper points NODE_EXTRA_CA_CERTS at. If these two
+// ever disagree, the agent's NODE_EXTRA_CA_CERTS would point at a path the
+// firewall script never installs the CA to, breaking every terminated
+// api.anthropic.com request with an unknown-CA error.
+func TestInitFirewallInstallsCAAtSystemPath(t *testing.T) {
+	s := string(initFirewallScript)
+	if !strings.Contains(s, ProxyCASystemPath) {
+		t.Errorf("init-firewall.sh does not install the CA at ProxyCASystemPath (%q); it and createAuthWrapper's NODE_EXTRA_CA_CERTS export have drifted", ProxyCASystemPath)
+	}
+}

@@ -77,5 +77,18 @@ const (
 	ProxyConfigDir    = "/etc/claude-bunker/proxy"
 	MaskingConfigPath = ProxyConfigDir + "/masking.json"
 	ProxyCADir        = ProxyConfigDir + "/ca"
-	ProxyCACertPath   = ProxyCADir + "/ca.pem"
+	// ProxyCACertPath is the proxy-owned copy of the per-container CA cert.
+	// ProxyConfigDir is chmod 0700 and chown'd to bunker-proxy (uid 1001) by
+	// PrepareMasking, so this path is NOT readable by the agent (uid 1000) —
+	// use ProxyCASystemPath below for anything the agent needs to trust.
+	ProxyCACertPath = ProxyCADir + "/ca.pem"
+	// ProxyCASystemPath is the world-readable system location where
+	// init-firewall.sh installs a copy of the per-container CA cert (via
+	// `update-ca-certificates`) whenever a masking config is present. Unlike
+	// ProxyCACertPath, this path lives under a standard 0755 system directory,
+	// so the uid-1000 agent can read it. This is what the agent's
+	// NODE_EXTRA_CA_CERTS must point at. Kept in sync with the hardcoded path
+	// in internal/container/scripts/init-firewall.sh by
+	// TestInitFirewallInstallsCAAtSystemPath.
+	ProxyCASystemPath = "/usr/local/share/ca-certificates/bunker-egress-ca.crt"
 )
