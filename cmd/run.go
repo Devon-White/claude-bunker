@@ -480,12 +480,23 @@ func (r *runner) resolveContainer() {
 		scriptMap[f.Name] = f.Content
 	}
 	r.cachedDockerfile = container.GenerateBaseDockerfile()
+
+	proxySrcMap := make(map[string][]byte, len(container.EgressProxySources()))
+	for _, f := range container.EgressProxySources() {
+		proxySrcMap[f.Name] = f.Content
+	}
+
 	r.buildInput = config.BuildInput{
 		Version:        Version,
 		Dockerfile:     r.cachedDockerfile,
 		Scripts:        scriptMap,
+		ProxySources:   proxySrcMap,
 		ProjectCfg:     r.projectCfg,
 		FeatureDigests: r.lockedFeatureDigests(),
+		// Masking changes runtime container setup (terminate vs splice-only
+		// proxy mode), so it must factor into the container fingerprint even
+		// though raw auth/secrets never do.
+		MaskActive: container.ShouldMask(r.auth, r.proxyCfg.HasProxy()),
 	}
 
 	r.fpResult = config.CompareFingerprints(r.buildInput, r.containerName)

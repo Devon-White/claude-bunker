@@ -11,13 +11,21 @@ import (
 	"strings"
 )
 
-// BuildInput bundles the four values that flow through every fingerprint function.
+// BuildInput bundles the values that flow through every fingerprint function.
 type BuildInput struct {
 	Version        string
 	Dockerfile     string
 	Scripts        map[string][]byte
+	ProxySources   map[string][]byte // egress-proxy Go source compiled into the image (name → content, from container.EgressProxySources())
 	ProjectCfg     ProjectConfig
 	FeatureDigests map[string]string // feature ref → resolved sha256 digest (from the committed lock)
+
+	// MaskActive records whether credential masking (container.ShouldMask) is
+	// active for this run. It affects container runtime setup (terminate vs
+	// splice-only proxy mode) so it must bust the container fingerprint, but
+	// it is a derived boolean only — auth/secrets themselves are deliberately
+	// excluded from fingerprints (tokens change without requiring a rebuild).
+	MaskActive bool
 }
 
 // imageFingerprint computes a SHA-256 hash of all inputs that affect the Docker
@@ -43,6 +51,20 @@ func imageFingerprint(b BuildInput) string {
 	for _, name := range scriptNames {
 		h.Write([]byte("script:" + name + ":"))
 		h.Write(b.Scripts[name])
+	}
+
+	// Hash egress-proxy source files in deterministic order. The multi-stage
+	// build compiles internal/container/egressproxy/ INTO the image, so a
+	// change to the proxy source must bust the image cache just like the
+	// embedded scripts above.
+	proxyNames := make([]string, 0, len(b.ProxySources))
+	for name := range b.ProxySources {
+		proxyNames = append(proxyNames, name)
+	}
+	sort.Strings(proxyNames)
+	for _, name := range proxyNames {
+		h.Write([]byte("proxysrc:" + name + ":"))
+		h.Write(b.ProxySources[name])
 	}
 
 	// Hash features config (affects image layers)
@@ -105,11 +127,17 @@ func imageFingerprint(b BuildInput) string {
 
 // containerFingerprint computes a SHA-256 hash of inputs that affect container
 // creation but NOT the Docker image: allowDomains, workspace path, exclude
-// paths, and postStartCommand.
+// paths, postStartCommand, and whether credential masking is active.
 //
 // Changes to container-only inputs require container recreation but not an
 // image rebuild, saving significant time.
-func containerFingerprint(projectCfg ProjectConfig) string {
+//
+// maskActive is deliberately NOT derived from ProjectConfig: it comes from the
+// caller (the run flow, which holds auth + proxy info) via container.ShouldMask.
+// Only this boolean — never raw auth/secret values — enters the fingerprint,
+// preserving the deliberate exclusion of secrets from fingerprinting while
+// still forcing a recreate when the mask decision flips.
+func containerFingerprint(projectCfg ProjectConfig, maskActive bool) string {
 	h := sha256.New()
 
 	// AllowDomains affect firewall setup at container start
@@ -142,6 +170,13 @@ func containerFingerprint(projectCfg ProjectConfig) string {
 		}
 	}
 
+	// Masking toggles runtime proxy behavior (terminate-and-swap vs
+	// splice-only). A container created WITHOUT masking must not be silently
+	// reused as if masking were active, and vice versa.
+	if maskActive {
+		h.Write([]byte("masking:on"))
+	}
+
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
@@ -164,7 +199,7 @@ func (r FingerprintResult) Save(containerName string) error {
 // match, and retains the computed hashes for later saving via Save().
 func CompareFingerprints(b BuildInput, containerName string) FingerprintResult {
 	currentImg := imageFingerprint(b)
-	currentCtr := containerFingerprint(b.ProjectCfg)
+	currentCtr := containerFingerprint(b.ProjectCfg, b.MaskActive)
 	combined := currentImg + ":" + currentCtr
 
 	cached, err := loadFingerprint(containerName)

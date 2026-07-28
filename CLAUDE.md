@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Project Is
 
-claude-bunker is a Go CLI that runs Claude Code inside a hardened Docker container with defense-in-depth security: iptables firewall, bubblewrap sandbox, managed settings, and bind-mounted workspace isolation. It prevents prompt injection attacks from exfiltrating credentials.
+claude-bunker is a Go CLI that runs Claude Code inside a hardened Docker container with defense-in-depth security: iptables firewall, an SNI-aware egress proxy, bubblewrap sandbox, managed settings, and bind-mounted workspace isolation. It prevents prompt injection attacks from exfiltrating credentials.
 
 ## Build & Test Commands
 
@@ -39,8 +39,9 @@ Releases are built by goreleaser (`.goreleaser.yml`) for linux/darwin/windows on
 | `cmd/` | Cobra CLI commands. Root disables flag parsing; subcommands re-enable it. |
 | `internal/config/` | Config loading (`project.go`), SHA-256 fingerprinting (`fingerprint.go`), deterministic container naming (`naming.go`), env var expansion (`expand.go`), OCI feature-name validation (`features.go`) |
 | `internal/devcontainer/` | Parse/generate `.devcontainer/devcontainer.json` (JSONC + `${localEnv}`), map to `ProjectConfig`, strip bunker-managed features (`devcontainer.go`, `generate.go`, `jsonc.go`, `load.go`, `merge.go`) |
-| `internal/container/` | Docker API wrapper: image build (`build.go`), Dockerfile generation (`generate.go`), container lifecycle (`lifecycle.go`), interactive exec (`exec.go`), domain/firewall management (`domains.go`), plus `lockfile.go` (devcontainer-lock.json), `baseimage.go`, `volumes.go`, `features.go`, `presets.go`, `constants.go`, `copy.go`, `client.go`, `embed.go` |
+| `internal/container/` | Docker API wrapper: image build (`build.go`), Dockerfile generation (`generate.go`), container lifecycle (`lifecycle.go`), interactive exec (`exec.go`), domain/firewall management (`domains.go`), credential masking (`masking.go`), plus `lockfile.go` (devcontainer-lock.json), `baseimage.go`, `volumes.go`, `features.go`, `presets.go`, `constants.go`, `copy.go`, `client.go`, `embed.go` |
 | `internal/container/scripts/` | Embedded shell scripts (`//go:embed`): `init-firewall.sh`, `refresh-firewall.sh`, `firewall-common.sh`, `base.dockerfile.tmpl`, `tmux.conf` |
+| `internal/container/egressproxy/` | Stdlib-only SNI-aware egress proxy compiled into the image via multi-stage build (`main.go`, `config.go`, `allowlist.go`, `sniread.go`, `splice.go`, `terminate.go`, `mask.go`, `ca.go`); sources embedded and exposed via `container.EgressProxySources()` |
 | `internal/buildlock/` | Cross-process build lock (unix/windows variants) |
 | `internal/sessions/` | Session/subagent tree via `claude agents --json` (store, watcher, manager) |
 | `internal/sandbox/` | Sandbox settings seeding (`seed.go`), plugin loading (`plugins.go`), proxy config (`proxy.go`) |
@@ -53,21 +54,22 @@ Releases are built by goreleaser (`.goreleaser.yml`) for linux/darwin/windows on
 - **`.devcontainer/devcontainer-lock.json`** — pins feature digests (reproducible builds); digests fold into the image fingerprint.
 - Enforcement of Claude Code behavior is a runtime read-only `/etc/claude-code/managed-settings.json` (written each start); host `settings.json`/`settings.local.json` are NOT injected.
 
-### Five Security Layers
+### Six Security Layers
 
 1. **Docker container** — process isolation
 2. **iptables firewall** — default-deny egress, IPv6 blocked, domain allowlist resolved to IPs at startup, self-test verifies blocking
-3. **Bubblewrap sandbox** — Claude Code's built-in sandbox with domain-level filtering
-4. **managed-settings.json** — enforced Claude Code settings (injected to `/etc/claude-code/`)
-5. **Bind-mount workspace** — only project directory is visible, exclude paths overlaid with tmpfs
+3. **SNI-aware egress proxy** — a stdlib-only Go proxy (`internal/container/egressproxy`) baked via multi-stage build; `init-firewall.sh` transparently REDIRECTs agent TCP/443 to it. It allowlists by TLS SNI (closing CDN-IP domain-fronting the ipset /24 tier can't see) and, in the bunker-CLI path, terminates the 1–3 credential hosts to swap a per-session sentinel for the real token (`InjectAuthSecrets` gives the agent only sentinels; real secrets live in `bunker-proxy`-owned files). Portable path runs the same binary in Tier-1 (splice) mode.
+4. **Bubblewrap sandbox** — Claude Code's built-in sandbox with domain-level filtering
+5. **managed-settings.json** — enforced Claude Code settings (injected to `/etc/claude-code/`)
+6. **Bind-mount workspace** — only project directory is visible, exclude paths overlaid with tmpfs
 
 ### Secrets
 
-Auth tokens are injected via tmpfs at `/run/secrets/`, never as environment variables. An auth wrapper script (`~/.claude-auth-wrapper.sh`) exports them before exec.
+Auth tokens are injected via tmpfs at `/run/secrets/`, never as environment variables. An auth wrapper script (`~/.claude-auth-wrapper.sh`) exports them before exec. When credential masking is active (`container.ShouldMask` — secrets present and no upstream proxy), the agent instead holds only per-session sentinels; the real secrets live in `bunker-proxy`-owned config under the egress proxy's control, which swaps sentinel→real on the 1–3 credential hosts it terminates.
 
 ### Fingerprinting & Caching
 
-The public API is `CompareFingerprints(BuildInput, containerName) FingerprintResult` (unexported `imageFingerprint`/`containerFingerprint` do the hashing). The image fingerprint covers version + Dockerfile + scripts + features + env + onCreateCommand **plus resolved feature digests from `devcontainer-lock.json`** (this is also how OS packages now factor in, since they're expressed as a feature); the container fingerprint covers domains + workspace + excludes + postStartCommand + plugins + seedHistory. Reproducible mod times (`2025-01-01T00:00:00Z`) ensure Docker layer cache hits.
+The public API is `CompareFingerprints(BuildInput, containerName) FingerprintResult` (unexported `imageFingerprint`/`containerFingerprint` do the hashing). The image fingerprint covers version + Dockerfile + scripts + **egress-proxy Go source (`container.EgressProxySources()`, compiled into the image by the multi-stage build)** + features + env + onCreateCommand **plus resolved feature digests from `devcontainer-lock.json`** (this is also how OS packages now factor in, since they're expressed as a feature); the container fingerprint covers domains + workspace + excludes + postStartCommand + plugins + seedHistory + **whether credential masking is active** (`BuildInput.MaskActive`, set by the run flow from `container.ShouldMask(auth, hasUpstreamProxy)` — masking changes runtime proxy setup, so toggling it forces a recreate, but raw auth/secret values themselves are never hashed). Reproducible mod times (`2025-01-01T00:00:00Z`) ensure Docker layer cache hits.
 
 ### Portability (VS Code / Codespaces) via `build.dockerfile`
 

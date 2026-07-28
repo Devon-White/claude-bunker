@@ -56,6 +56,47 @@ func TestImageFingerprint_ChangesOnScriptChange(t *testing.T) {
 	}
 }
 
+func TestImageFingerprint_ChangesOnProxySourceChange(t *testing.T) {
+	dockerfile := "FROM debian:bookworm-slim"
+	cfg := ProjectConfig{}
+
+	proxy1 := map[string][]byte{"egressproxy/main.go": []byte("package main // v1")}
+	proxy2 := map[string][]byte{"egressproxy/main.go": []byte("package main // v2")}
+
+	fp1 := imageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, ProxySources: proxy1, ProjectCfg: cfg})
+	fp2 := imageFingerprint(BuildInput{Version: testVersion, Dockerfile: dockerfile, ProxySources: proxy2, ProjectCfg: cfg})
+
+	if fp1 == fp2 {
+		t.Error("image fingerprint should change when egress-proxy source content changes")
+	}
+}
+
+// TestImageFingerprintCoversProxySource proves the image fingerprint is fed by
+// the egress-proxy sources: it must be deterministic across calls, non-empty,
+// and (per TestImageFingerprint_ChangesOnProxySourceChange above) sensitive to
+// a single byte of proxy-source content.
+func TestImageFingerprintCoversProxySource(t *testing.T) {
+	in := BuildInput{
+		Version:    testVersion,
+		Dockerfile: "FROM debian:bookworm-slim",
+		Scripts:    map[string][]byte{"init-firewall.sh": []byte("#!/bin/bash")},
+		ProxySources: map[string][]byte{
+			"egressproxy/main.go": []byte("package main"),
+			"egressproxy/go.mod":  []byte("module egressproxyd\n\ngo 1.23\n"),
+		},
+		ProjectCfg: ProjectConfig{},
+	}
+	base := imageFingerprint(in)
+
+	again := imageFingerprint(in)
+	if base != again {
+		t.Fatal("image fingerprint must be deterministic")
+	}
+	if base == "" {
+		t.Fatal("image fingerprint empty")
+	}
+}
+
 // TestImageFingerprint_ChangesOnFeaturesConfig covers plain Features-map
 // changes (independent of FeatureDigests, covered separately). Extra apt
 // packages are now expressed as a Features entry (the standard apt-packages
@@ -124,8 +165,8 @@ func TestContainerFingerprint_ChangesOnDomains(t *testing.T) {
 	cfg1 := ProjectConfig{AllowDomains: []string{"example.com"}}
 	cfg2 := ProjectConfig{AllowDomains: []string{"example.com", "other.com"}}
 
-	fp1 := containerFingerprint(cfg1)
-	fp2 := containerFingerprint(cfg2)
+	fp1 := containerFingerprint(cfg1, false)
+	fp2 := containerFingerprint(cfg2, false)
 
 	if fp1 == fp2 {
 		t.Error("container fingerprint should change when domains change")
@@ -327,8 +368,8 @@ func TestContainerFingerprint_ChangesOnPlugins(t *testing.T) {
 	cfg1 := ProjectConfig{}
 	cfg2 := ProjectConfig{Plugins: "user"}
 
-	fp1 := containerFingerprint(cfg1)
-	fp2 := containerFingerprint(cfg2)
+	fp1 := containerFingerprint(cfg1, false)
+	fp2 := containerFingerprint(cfg2, false)
 
 	if fp1 == fp2 {
 		t.Error("container fingerprint should change when plugins field changes")
@@ -336,7 +377,7 @@ func TestContainerFingerprint_ChangesOnPlugins(t *testing.T) {
 
 	// Different plugin levels should produce different fingerprints
 	cfg3 := ProjectConfig{Plugins: "all"}
-	fp3 := containerFingerprint(cfg3)
+	fp3 := containerFingerprint(cfg3, false)
 	if fp2 == fp3 {
 		t.Error("container fingerprint should differ between plugin levels")
 	}
@@ -350,9 +391,9 @@ func TestContainerFingerprint_ChangesOnSeedHistory(t *testing.T) {
 	boolFalse := false
 	cfgFalse := ProjectConfig{SeedHistory: &boolFalse}
 
-	fpDefault := containerFingerprint(cfgDefault)
-	fpTrue := containerFingerprint(cfgTrue)
-	fpFalse := containerFingerprint(cfgFalse)
+	fpDefault := containerFingerprint(cfgDefault, false)
+	fpTrue := containerFingerprint(cfgTrue, false)
+	fpFalse := containerFingerprint(cfgFalse, false)
 
 	if fpDefault == fpTrue {
 		t.Error("container fingerprint should change when seedHistory is explicitly set to true vs unset")
@@ -362,6 +403,27 @@ func TestContainerFingerprint_ChangesOnSeedHistory(t *testing.T) {
 	}
 	if fpTrue == fpFalse {
 		t.Error("container fingerprint should differ between seedHistory true and false")
+	}
+}
+
+// TestContainerFingerprint_ChangesOnMasking verifies that toggling credential
+// masking (container.ShouldMask — auth secrets present and no upstream proxy)
+// forces a container recreate rather than silently reusing a container created
+// under a different masking state. Only the boolean mask state is hashed;
+// no raw token/secret material ever enters the fingerprint.
+func TestContainerFingerprint_ChangesOnMasking(t *testing.T) {
+	cfg := ProjectConfig{}
+
+	fpOff := containerFingerprint(cfg, false)
+	fpOn := containerFingerprint(cfg, true)
+
+	if fpOff == fpOn {
+		t.Error("container fingerprint should change when masking is toggled")
+	}
+
+	// Deterministic for a fixed mask state.
+	if containerFingerprint(cfg, true) != fpOn {
+		t.Error("container fingerprint must be deterministic for a fixed masking state")
 	}
 }
 
