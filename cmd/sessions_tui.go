@@ -259,7 +259,11 @@ func (m sessionsModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if err := mgrRef.StartContainer(ctx, containerID); err != nil {
 					return actionErrorMsg{err: fmt.Errorf("start %s: %w", c.DisplayName, err)}
 				}
-				// Run post-start setup: re-inject auth and refresh firewall.
+				// Re-inject auth secrets lost when the container stopped (tmpfs
+				// does not survive a stop/start). This does NOT re-run
+				// RunPostStart, so the firewall and egress proxy are not
+				// reinitialized on this restart path — a known limitation; see
+				// reinjectOnStart's doc comment.
 				if cliRef != nil {
 					reinjectOnStart(ctx, cliRef, containerID)
 				}
