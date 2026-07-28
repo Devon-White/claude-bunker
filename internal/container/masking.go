@@ -64,6 +64,17 @@ func BuildMaskRules(auth AuthTokens) ([]maskRuleJSON, AuthTokens) {
 	return rules, sent
 }
 
+// ShouldMask decides whether credential masking should be active for this
+// run. Masking is only correct when the bunker egress proxy will actually be
+// running with the masking config: init-firewall.sh stands the proxy down
+// whenever an upstream corporate proxy (HTTPS_PROXY/https_proxy) is
+// configured, since the agent's TLS traffic already goes through that proxy.
+// If masking were forced on in that case, the agent would receive sentinels
+// that nothing ever swaps back to real secrets, breaking auth outright.
+func ShouldMask(auth AuthTokens, hasUpstreamProxy bool) bool {
+	return auth.HasSecrets() && !hasUpstreamProxy
+}
+
 // PrepareMasking writes the proxy masking config (real secrets) into a
 // bunker-proxy-owned dir before the firewall/proxy start. No-op if no secrets.
 func PrepareMasking(ctx context.Context, cli *client.Client, containerID string, auth AuthTokens) (AuthTokens, error) {

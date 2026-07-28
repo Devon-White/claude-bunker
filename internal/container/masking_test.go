@@ -43,3 +43,27 @@ func TestBuildMaskRulesEmptyWhenNoSecrets(t *testing.T) {
 		t.Errorf("no secrets => no rules, got %d", len(rules))
 	}
 }
+
+func TestShouldMask(t *testing.T) {
+	withSecrets := AuthTokens{ApiKey: "sk-ant-REAL"}
+	noSecrets := AuthTokens{}
+
+	tests := []struct {
+		name             string
+		auth             AuthTokens
+		hasUpstreamProxy bool
+		want             bool
+	}{
+		{"secrets and no upstream proxy => mask", withSecrets, false, true},
+		{"secrets but upstream proxy configured => no mask", withSecrets, true, false},
+		{"no secrets => no mask regardless of proxy", noSecrets, false, false},
+		{"no secrets and upstream proxy => no mask", noSecrets, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ShouldMask(tt.auth, tt.hasUpstreamProxy); got != tt.want {
+				t.Errorf("ShouldMask(%+v, %v) = %v, want %v", tt.auth, tt.hasUpstreamProxy, got, tt.want)
+			}
+		})
+	}
+}

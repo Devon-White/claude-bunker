@@ -637,6 +637,7 @@ func (r *runner) buildAndCreate() {
 		ExtraDomains:     r.extraDomains,
 		PostStartCommand: r.projectCfg.PostStartCommand,
 		Auth:             r.auth,
+		Mask:             container.ShouldMask(r.auth, r.proxyCfg.HasProxy()),
 	}); err != nil {
 		die("Post-start failed: " + err.Error())
 	}
@@ -696,9 +697,19 @@ func (r *runner) seedSettings() {
 // container. Tokens on tmpfs may be stale or missing after container restart.
 // Unlike buildAndCreate, this skips firewall/git/domain setup (already done).
 func (r *runner) reinjectAuthSecrets() {
-	if err := container.InjectAuthSecrets(r.ctx, r.cli, r.containerID, r.auth); err != nil {
-		warn("Failed to re-inject auth secrets: " + err.Error())
+	mask := container.ShouldMask(r.auth, r.proxyCfg.HasProxy())
+	if !mask {
+		if err := container.InjectAuthSecrets(r.ctx, r.cli, r.containerID, r.auth, false); err != nil {
+			warn("Failed to re-inject auth secrets: " + err.Error())
+		}
 	}
+	// When masking is active, do NOT re-inject: the sentinels + wrapper were
+	// established once at container creation (RunPostStart), and the running
+	// egress proxy still holds the real secrets in its masking config.
+	// Re-injecting here would pass the REAL r.auth straight into agent-
+	// readable /run/secrets/*, overwriting the sentinels and defeating
+	// masking entirely. Token rotation on a reused masked container requires
+	// recreating the container (a fresh RunPostStart call).
 
 	// Re-inject proxy certs if configured
 	if r.proxyCfg.HasCerts() {

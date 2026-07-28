@@ -329,18 +329,31 @@ type RunPostStartOpts struct {
 	ExtraDomains     []string
 	PostStartCommand string
 	Auth             AuthTokens
+	// Mask, when true, activates credential masking: real secrets go into a
+	// bunker-proxy-owned config and the agent receives sentinels instead.
+	// Masking is only meaningful when the bunker egress proxy will actually
+	// run to swap sentinels back to real secrets on the wire — callers should
+	// compute this as ShouldMask(auth, hasUpstreamProxy), since init-firewall.sh
+	// stands the proxy down when an upstream corporate proxy (HTTPS_PROXY) is
+	// configured. When false, RunPostStart behaves exactly as it did before
+	// masking existed: real secrets are injected, no masking config is
+	// written, and no CA trust is exported.
+	Mask bool
 }
 
 // RunPostStart runs the post-start commands inside the container:
 // 1. Write domains file + batch pre-firewall setup (git config, domain lockdown)
-// 1c. Prepare credential masking (real secrets → bunker-proxy-owned config)
+// 1c. Prepare credential masking (real secrets → bunker-proxy-owned config),
+//
+//	only when opts.Mask is true
+//
 // 2. Run init-firewall.sh (standalone — must run after domain file exists;
 //
 //	the firewall also starts the egress proxy, which reads the masking
 //	config prepared in step 1c, so 1c MUST run before this step)
 //
 // 3. Batch post-firewall setup (refresh daemon + git identity)
-// 4. Inject auth secrets for the agent — sentinels when masking is active,
+// 4. Inject auth secrets for the agent — sentinels when opts.Mask is true,
 //
 //	so the agent never sees the real credentials (if provided)
 //
@@ -387,15 +400,22 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 	}
 
 	// 1c. Prepare credential masking (real secrets → proxy-owned config) BEFORE
-	// the firewall starts the proxy. Returns the sentinel tokens for the agent.
-	sentinelAuth, err := PrepareMasking(ctx, cli, containerID, opts.Auth)
-	if err != nil {
-		return fmt.Errorf("prepare masking: %w", err)
+	// the firewall starts the proxy, but only when masking is actually going
+	// to be active (opts.Mask) — e.g. an upstream corporate proxy stands the
+	// bunker egress proxy down (see init-firewall.sh), and in that case
+	// sentinels would never get swapped back to real secrets, breaking auth.
+	authToInject := opts.Auth
+	if opts.Mask {
+		sentinelAuth, err := PrepareMasking(ctx, cli, containerID, opts.Auth)
+		if err != nil {
+			return fmt.Errorf("prepare masking: %w", err)
+		}
+		authToInject = sentinelAuth
 	}
 
 	// 2. Run firewall init (exec runs as root, no sudo needed).
 	// Pass the domains file path as an argument so Go is the single source of truth.
-	_, err = ExecNonInteractive(ctx, cli, containerID, RootUser,
+	_, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
 		[]string{FirewallScriptPath, DomainsFilePath})
 	if err != nil {
 		return fmt.Errorf("init-firewall.sh: %w", err)
@@ -436,7 +456,7 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 	}
 
 	// 4. Inject auth secrets (sentinels when masking is active) for the agent.
-	if err := InjectAuthSecrets(ctx, cli, containerID, sentinelAuth); err != nil {
+	if err := InjectAuthSecrets(ctx, cli, containerID, authToInject, opts.Mask); err != nil {
 		return fmt.Errorf("auth injection: %w", err)
 	}
 
@@ -465,10 +485,18 @@ func RunPostStart(ctx context.Context, cli *client.Client, containerID string, o
 // Tokens are stored as files in /run/secrets/ (never as environment variables)
 // so they don't appear in docker inspect or /proc/*/environ.
 //
+// maskActive indicates whether credential masking is active for this
+// container (the bunker egress proxy is running with a masking config that
+// will swap these tokens back to the real secrets on the wire). It only
+// controls whether the auth wrapper trusts the proxy's CA
+// (NODE_EXTRA_CA_CERTS) — it does NOT change which tokens get written here;
+// callers are responsible for passing sentinel tokens when masking is active
+// and real tokens otherwise (see RunPostStart).
+//
 // Batched: all file writes + permission changes happen in a single root exec
 // call, followed by a single user exec for git config. This reduces Docker API
 // round-trips from ~10 to 2 (saving ~1-2s of exec overhead).
-func InjectAuthSecrets(ctx context.Context, cli *client.Client, containerID string, auth AuthTokens) error {
+func InjectAuthSecrets(ctx context.Context, cli *client.Client, containerID string, auth AuthTokens, maskActive bool) error {
 	if !auth.HasSecrets() {
 		return nil
 	}
@@ -483,7 +511,7 @@ func InjectAuthSecrets(ctx context.Context, cli *client.Client, containerID stri
 	if err := writeSecretFiles(ctx, cli, containerID, &script, ug, auth); err != nil {
 		return err
 	}
-	createAuthWrapper(&script, ug, auth)
+	createAuthWrapper(&script, ug, auth, maskActive)
 
 	// Single root exec: write all secrets + wrapper + set all permissions
 	if _, err := ExecNonInteractive(ctx, cli, containerID, RootUser,
@@ -546,7 +574,13 @@ func writeSecretFiles(ctx context.Context, cli *client.Client, containerID strin
 // script at ~/.claude-auth-wrapper.sh. The wrapper reads secrets from tmpfs
 // files and exports them as env vars before exec-ing the wrapped command,
 // ensuring tokens never appear in docker inspect or container env.
-func createAuthWrapper(script *strings.Builder, ug string, auth AuthTokens) {
+//
+// maskActive gates the NODE_EXTRA_CA_CERTS export: it must be exported only
+// when the bunker egress proxy is actually running and terminating the auth
+// hosts with its own CA — exporting it otherwise would point Node at a CA
+// bundle that doesn't correspond to anything live, or (worse) at a stale one
+// from a previous run.
+func createAuthWrapper(script *strings.Builder, ug string, auth AuthTokens, maskActive bool) {
 	if !auth.HasSecrets() {
 		return
 	}
@@ -563,9 +597,11 @@ func createAuthWrapper(script *strings.Builder, ug string, auth AuthTokens) {
 		// Export for the GitHub MCP plugin which expects this env var
 		fmt.Fprintf(script, "export GITHUB_PERSONAL_ACCESS_TOKEN=\"$(cat %s/gh_token)\"\n", SecretsDir)
 	}
-	// When credential masking is active the proxy terminates the auth hosts;
-	// Node/Claude Code must trust the per-container CA.
-	fmt.Fprintf(script, "export NODE_EXTRA_CA_CERTS=%q\n", ProxyCACertPath)
+	if maskActive {
+		// When credential masking is active the proxy terminates the auth
+		// hosts; Node/Claude Code must trust the per-container CA.
+		fmt.Fprintf(script, "export NODE_EXTRA_CA_CERTS=%q\n", ProxyCACertPath)
+	}
 	script.WriteString("exec \"$@\"\n")
 	script.WriteString("WRAPPER_EOF\n")
 	fmt.Fprintf(script, "chmod 755 %s && chown %s %s\n", AuthWrapperPath, ug, AuthWrapperPath)

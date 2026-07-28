@@ -496,6 +496,14 @@ func teardownAfterSession(ctx context.Context, cli *client.Client, containerID, 
 
 // reinjectOnStart re-injects auth secrets after starting a stopped container.
 // Secrets live on tmpfs which is lost when the container stops.
+//
+// maskActive is always false here: this path only calls Docker's bare
+// ContainerStart (see Manager.StartContainer) and never re-runs
+// RunPostStart/init-firewall.sh, so the bunker egress proxy is not relaunched
+// for the restarted container. Masking cannot be functionally active without
+// a running proxy to swap sentinels back to real secrets, so this must
+// always inject real tokens and must never claim CA trust
+// (NODE_EXTRA_CA_CERTS) for a proxy that isn't running.
 func reinjectOnStart(ctx context.Context, cli *client.Client, containerID string) {
 	// Re-inject auth from environment (same precedence as cmd/run.go).
 	auth := ctr.AuthTokens{
@@ -504,7 +512,7 @@ func reinjectOnStart(ctx context.Context, cli *client.Client, containerID string
 		GhToken:    os.Getenv("GITHUB_TOKEN"),
 	}
 	if auth.HasSecrets() {
-		_ = ctr.InjectAuthSecrets(ctx, cli, containerID, auth)
+		_ = ctr.InjectAuthSecrets(ctx, cli, containerID, auth, false)
 	}
 }
 
