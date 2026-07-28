@@ -67,11 +67,17 @@ func TestReadClientHelloNoSNI(t *testing.T) {
 }
 
 // TestParseSNIBeyondListLen is a regression test for the server_name_list
-// boundary enforcement. It crafts a malicious ClientHello body where a
-// host_name entry is placed beyond the declared listLen. Without the
-// `ext = ext[:listLen]` fix, the parser would skip past the declared
-// boundary and find the malicious entry. With the fix, it correctly
-// returns empty SNI because no valid entry exists within the boundary.
+// boundary enforcement. It crafts a malicious ClientHello where:
+//   - listLen=0 (declares zero bytes for the server_name_list)
+//   - Immediately followed by a complete, valid host_name entry for "malicious.test"
+//
+// With the fix `ext = ext[:listLen]` (listLen=0), the reslice makes ext empty,
+// so the loop `for len(ext) >= 3` never runs, and parseSNI returns "".
+//
+// Without the fix, the loop would ignore the boundary and read the "malicious.test"
+// entry, returning it as the SNI (the test would FAIL). This test guards against
+// a regression where an attacker crafts a ClientHello to exfiltrate an SNI via
+// out-of-bounds entry placement.
 func TestParseSNIBeyondListLen(t *testing.T) {
 	// Construct a minimal ClientHello body with a crafted server_name extension.
 	var body bytes.Buffer
@@ -101,18 +107,15 @@ func TestParseSNIBeyondListLen(t *testing.T) {
 	extBodyStart := body.Len()
 	body.Write([]byte{0x00, 0x00}) // Extension length placeholder
 
-	// server_name_list: declare listLen=5, which gives us 5 bytes to work with.
-	// We'll put incomplete/partial data in those 5 bytes (e.g., just a type byte and
-	// a partial length that doesn't form a complete entry). Then, AFTER those 5 bytes,
-	// we'll put a complete "malicious.test" entry that should NOT be returned because
-	// it's beyond the declared boundary.
+	// server_name_list structure:
+	// - listLen = 0 (declares that zero bytes follow for the list)
 	listLenBuf := make([]byte, 2)
-	binary.BigEndian.PutUint16(listLenBuf, 5) // listLen = 5
+	binary.BigEndian.PutUint16(listLenBuf, 0) // listLen = 0
 	body.Write(listLenBuf)
-	// Fill the next 5 bytes with data that doesn't form a complete host_name entry
-	// within those 5 bytes (just padding).
-	body.Write([]byte{0x00, 0x00, 0x00, 0x00, 0x00}) // 5 bytes of incomplete/padding data
-	// Now, AFTER the listLen boundary, put a complete host_name entry that should be ignored.
+
+	// Now, AFTER the declared listLen boundary, place a complete, valid host_name entry
+	// for "malicious.test". Without the boundary enforcement fix, the loop would still
+	// process this entry and return it as the SNI.
 	body.WriteByte(0x00) // Type: host_name
 	nameLenBuf := make([]byte, 2)
 	binary.BigEndian.PutUint16(nameLenBuf, 14)
@@ -145,10 +148,10 @@ func TestParseSNIBeyondListLen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseSNI failed: %v", err)
 	}
-	// The key assertion: even though "malicious.test" exists in the extension body,
-	// it's beyond the declared listLen, so the parser should not return it.
-	// With the fix, the loop is bounded by `ext = ext[:listLen]`, so it only sees
-	// the first 5 bytes of padding and returns empty SNI.
+	// The key assertion: parseSNI must return "" because the boundary is enforced.
+	// With the fix `ext = ext[:listLen]` (listLen=0), ext becomes empty and the loop
+	// never runs. Without the fix, the loop would read the "malicious.test" entry
+	// beyond the boundary and this assertion would fail (returned "malicious.test").
 	if sni != "" {
 		t.Fatalf("sni should be empty (listLen boundary enforcement), got %q", sni)
 	}
