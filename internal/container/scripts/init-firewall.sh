@@ -289,7 +289,7 @@ fi
 # upstream proxy was configured or the binary is missing).
 # ---------------------------------------------------------------------------
 if [ "$SNI_PROXY_ACTIVE" = "1" ] && [ -x "$PROXY_BIN" ]; then
-    ALLOWED_IP=$(ipset list "$IPSET_NAME" 2>/dev/null | awk '/^[0-9]/{print $1; exit}' | cut -d/ -f1)
+    ALLOWED_IP=$(ipset list "$IPSET_NAME" 2>/dev/null | awk '/^[0-9]/{print $1; exit}' | cut -d/ -f1) || true
     if [ -n "$ALLOWED_IP" ]; then
         if curl --connect-timeout 3 --max-time 5 --resolve "fronting.invalid:443:$ALLOWED_IP" \
             https://fronting.invalid/ >/dev/null 2>&1; then
