@@ -48,3 +48,19 @@ func TestGenerateBaseDockerfile_ScopedSudoersGrant(t *testing.T) {
 		t.Error("sudoers grant must be scoped to firewall scripts, not blanket sudo")
 	}
 }
+
+func TestGenerateBaseDockerfile_MultiStageProxy(t *testing.T) {
+	df := GenerateBaseDockerfile()
+	for _, want := range []string{
+		"FROM golang:1.23-bookworm AS proxybuild",
+		"COPY egressproxy/ ./egressproxy/",
+		"go build",
+		"COPY --from=proxybuild",
+		ProxyBinaryPath,
+		"useradd --uid 1001",
+	} {
+		if !strings.Contains(df, want) {
+			t.Errorf("base Dockerfile missing %q", want)
+		}
+	}
+}

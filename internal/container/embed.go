@@ -6,10 +6,41 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 //go:embed scripts/*
 var embeddedScripts embed.FS
+
+//go:embed egressproxy/*.go
+var egressProxySrc embed.FS
+
+// synthEgressGoMod is the standalone module file shipped into the build context
+// so the multi-stage builder compiles the stdlib-only proxy offline.
+const synthEgressGoMod = "module egressproxyd\n\ngo 1.23\n"
+
+// EgressProxySources returns the proxy Go source (test files excluded) plus a
+// synthetic go.mod, all rooted at egressproxy/ in the build context.
+func EgressProxySources() []BuildContextFile {
+	entries, err := egressProxySrc.ReadDir("egressproxy")
+	if err != nil {
+		panic("reading embedded egressproxy: " + err.Error())
+	}
+	var out []BuildContextFile
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		data, err := egressProxySrc.ReadFile("egressproxy/" + name)
+		if err != nil {
+			panic("reading embedded egressproxy/" + name + ": " + err.Error())
+		}
+		out = append(out, BuildContextFile{Name: "egressproxy/" + name, Content: data, Mode: 0644})
+	}
+	out = append(out, BuildContextFile{Name: "egressproxy/go.mod", Content: []byte(synthEgressGoMod), Mode: 0644})
+	return out
+}
 
 // mustReadEmbedded reads a file from the embedded scripts FS or panics.
 func mustReadEmbedded(name string) []byte {
@@ -65,6 +96,16 @@ func WriteBuildContext(outDir string) error {
 
 	for _, f := range BuildContextScripts() {
 		if err := os.WriteFile(filepath.Join(outDir, f.Name), f.Content, f.Mode); err != nil {
+			return fmt.Errorf("writing %s: %w", f.Name, err)
+		}
+	}
+
+	for _, f := range EgressProxySources() {
+		full := filepath.Join(outDir, filepath.FromSlash(f.Name))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			return fmt.Errorf("creating dir for %s: %w", f.Name, err)
+		}
+		if err := os.WriteFile(full, f.Content, f.Mode); err != nil {
 			return fmt.Errorf("writing %s: %w", f.Name, err)
 		}
 	}

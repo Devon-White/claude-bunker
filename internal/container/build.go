@@ -239,6 +239,11 @@ func buildContextTar(dockerfile string, features []ResolvedFeature, cachedScript
 			return nil, fmt.Errorf("adding %s: %w", f.Name, err)
 		}
 	}
+	for _, f := range EgressProxySources() {
+		if err := addTarEntry(tw, f.Name, f.Content, int64(f.Mode), modTime); err != nil {
+			return nil, fmt.Errorf("adding %s: %w", f.Name, err)
+		}
+	}
 	// Add feature directories under _features/<id>/
 	for _, f := range features {
 		featureBase := filepath.Clean(f.InstallDir)

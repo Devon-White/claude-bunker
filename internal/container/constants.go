@@ -66,3 +66,16 @@ type AuthTokens struct {
 func (a AuthTokens) HasSecrets() bool {
 	return a.GhToken != "" || a.ApiKey != "" || a.OAuthToken != ""
 }
+
+// Egress proxy (SNI-aware) constants.
+const (
+	ProxyUser         = "bunker-proxy"
+	ProxyUID          = 1001
+	ProxyGID          = 1001
+	ProxyPort         = "15443"
+	ProxyBinaryPath   = "/usr/local/bin/egress-proxy"
+	ProxyConfigDir    = "/etc/claude-bunker/proxy"
+	MaskingConfigPath = ProxyConfigDir + "/masking.json"
+	ProxyCADir        = ProxyConfigDir + "/ca"
+	ProxyCACertPath   = ProxyCADir + "/ca.pem"
+)

@@ -1,8 +1,20 @@
+# Build the SNI-aware egress proxy (stdlib-only, standalone module) for the
+# target arch. The builder stage is discarded from the final image.
+FROM golang:1.23-bookworm AS proxybuild
+WORKDIR /build
+COPY egressproxy/ ./egressproxy/
+RUN cd egressproxy && CGO_ENABLED=0 GOPROXY=off go build -trimpath -o /egress-proxy .
+
 FROM debian:bookworm-slim
 
 # Create {{.User}} user
 RUN groupadd --gid 1000 {{.User}} && \
   useradd --uid 1000 --gid 1000 -m -s /bin/bash {{.User}}
+
+# Dedicated non-root user for the egress proxy (privilege separation): it owns
+# its config/CA/real-secret files, which the agent user cannot read.
+RUN groupadd --gid {{.ProxyUID}} {{.ProxyUser}} && \
+  useradd --uid {{.ProxyUID}} --gid {{.ProxyUID}} -M -s /usr/sbin/nologin {{.ProxyUser}}
 
 # Install development tools, iptables for firewall, and utilities
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -65,8 +77,10 @@ COPY firewall-common.sh {{.CommonFirewallPath}}
 COPY init-firewall.sh {{.FirewallPath}}
 COPY refresh-firewall.sh {{.RefreshFirewallPath}}
 COPY tmux.conf {{.Home}}/.tmux.conf
+COPY --from=proxybuild /egress-proxy {{.ProxyBinaryPath}}
 RUN chmod +x {{.CommonFirewallPath}} {{.FirewallPath}} {{.RefreshFirewallPath}} && \
   chown {{.User}}:{{.User}} {{.Home}}/.tmux.conf
+RUN chmod 0755 {{.ProxyBinaryPath}}
 
 # Scoped NOPASSWD sudo for exactly the firewall scripts, arg-pinned to the
 # fixed root-owned allowlist path — allows the VS Code postStartCommand to

@@ -19,6 +19,9 @@ type baseTemplateData struct {
 	FirewallPath        string
 	RefreshFirewallPath string
 	AllowedDomainsPath  string
+	ProxyUser           string
+	ProxyUID            int
+	ProxyBinaryPath     string
 }
 
 // baseTmpl is parsed once at package init from the embedded template.
@@ -55,6 +58,9 @@ func generateBaseContent() string {
 		FirewallPath:        FirewallScriptPath,
 		RefreshFirewallPath: RefreshFirewallScriptPath,
 		AllowedDomainsPath:  AllowedDomainsPath,
+		ProxyUser:           ProxyUser,
+		ProxyUID:            ProxyUID,
+		ProxyBinaryPath:     ProxyBinaryPath,
 	}
 
 	var b strings.Builder
