@@ -51,6 +51,16 @@ func isEnvRef(s string) bool {
 // This exact command (script path + domains path) must match the arg-pinned
 // sudoers grant baked into base.dockerfile.tmpl, or sudo denies it.
 //
+// The backgrounded refresh is wrapped in a subshell — "(sudo ... &)" — rather
+// than backgrounded at the top level. A trailing top-level "&" would make
+// this the last word of the *whole* postStartCommand once Generate appends
+// " && " + a user's own postStartCommand, producing "... & && npm install":
+// a shell syntax error (`&&` with no left-hand command), which aborts the
+// entire postStartCommand under the devcontainer CLI's `/bin/sh -c` — the
+// firewall never comes up AND the user's command never runs. The subshell
+// still backgrounds the refresh daemon (it returns immediately), but the
+// command as a whole now ends in ")", so it chains cleanly with " && ".
+//
 // Bunker's own native build/run never uses this string — it runs the
 // firewall directly as root via docker exec (internal/container/lifecycle.go)
 // and the baked allowlist path isn't even present in bunker's native image
@@ -59,7 +69,7 @@ func isEnvRef(s string) bool {
 // PostStartCommand (see stripBunkerPostStart in load.go) so bunker's own
 // postStart step doesn't try to re-run it against a nonexistent file.
 func firewallPostStartCommand() string {
-	return fmt.Sprintf("sudo %s %s && sudo %s %s >/dev/null 2>&1 &",
+	return fmt.Sprintf("sudo %s %s && (sudo %s %s >/dev/null 2>&1 &)",
 		container.FirewallScriptPath, container.AllowedDomainsPath,
 		container.RefreshFirewallScriptPath, container.AllowedDomainsPath)
 }

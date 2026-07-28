@@ -3,6 +3,7 @@ package devcontainer
 import (
 	"bytes"
 	"encoding/json"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -183,7 +184,15 @@ func TestGenerate_PostStartRunsFirewallAgainstBakedAllowlist(t *testing.T) {
 }
 
 // TestGenerate_PostStartAppendsUserCommandAfterFirewall verifies a project's
-// own postStartCommand still runs, but only AFTER the firewall is up.
+// own postStartCommand still runs, but only AFTER the firewall is up, AND
+// that the combined command is valid shell. The firewall command backgrounds
+// a refresh daemon (`&`); if that `&` were left at the top level, appending
+// " && " + a user command would produce "... & && npm install" — a shell
+// syntax error (`&&` with no left-hand command) that aborts the ENTIRE
+// postStartCommand under the devcontainer CLI's `/bin/sh -c`, so the
+// firewall never comes up and the user's command never runs. The fix wraps
+// the backgrounded refresh in a subshell "(... &)" so the command as a whole
+// ends in ")", not "&".
 func TestGenerate_PostStartAppendsUserCommandAfterFirewall(t *testing.T) {
 	cfg := config.ProjectConfig{PostStartCommand: "npm install"}
 	data, err := Generate(cfg, GenerateOpts{})
@@ -196,5 +205,20 @@ func TestGenerate_PostStartAppendsUserCommandAfterFirewall(t *testing.T) {
 	userIdx := strings.Index(cmd, "npm install")
 	if fwIdx == -1 || userIdx == -1 || userIdx < fwIdx {
 		t.Errorf("user postStartCommand must run AFTER the firewall bootstrap, got %q", cmd)
+	}
+	if strings.Contains(cmd, "& &&") {
+		t.Errorf("postStartCommand must not have a top-level backgrounded `&` immediately followed by `&&` (shell syntax error), got %q", cmd)
+	}
+
+	path, lookErr := exec.LookPath("bash")
+	if lookErr != nil {
+		t.Skip("bash not found on PATH; skipping shell-validity check")
+	}
+	bashCmd := exec.Command(path, "-n", "-c", cmd)
+	var out bytes.Buffer
+	bashCmd.Stdout = &out
+	bashCmd.Stderr = &out
+	if err := bashCmd.Run(); err != nil {
+		t.Errorf("combined postStartCommand is not valid shell (bash -n): %v\ncommand: %q\noutput: %s", err, cmd, out.String())
 	}
 }
