@@ -611,6 +611,48 @@ func writeDevContainer(workspace string, cfg config.ProjectConfig) error {
 		return fmt.Errorf("writing seccomp.json: %w", err)
 	}
 	success("Saved " + seccompPath)
+
+	// Sibling Dockerfile + firewall scripts + allowlist for the portable
+	// (VS Code/Codespaces) path — VS Code's build context defaults to
+	// .devcontainer/, so these must live next to devcontainer.json. All
+	// derived from bunker's canonical sources; nothing hardcoded here.
+	dir := filepath.Dir(p)
+
+	// The Dockerfile is bunker's own base image plus a suffix that bakes the
+	// firewall allowlist ROOT-OWNED and read-only: COPY makes it root:root,
+	// and chmod 0444 stops the sandboxed agent from widening it. This is the
+	// exact path the arg-pinned firewall sudo (Task 1) is pinned to.
+	dockerfile := container.GenerateBaseDockerfile() + fmt.Sprintf(
+		"\n# Portable firewall allowlist (VS Code path): root-owned + read-only so the\n"+
+			"# sandboxed agent cannot widen it. The arg-pinned firewall sudo targets this path.\n"+
+			"COPY allowed-domains.txt %s\n"+
+			"USER root\n"+
+			"RUN chmod 0444 %s\n",
+		container.AllowedDomainsPath, container.AllowedDomainsPath)
+	dockerfilePath := filepath.Join(dir, "Dockerfile")
+	if err := os.WriteFile(dockerfilePath, []byte(dockerfile), 0o644); err != nil {
+		return fmt.Errorf("writing Dockerfile: %w", err)
+	}
+	success("Saved " + dockerfilePath)
+
+	// All of container.BuildContextScripts() (not just the 3 firewall scripts):
+	// GenerateBaseDockerfile() also has a `COPY tmux.conf ...` layer, so it must
+	// be present in this build context too or the VS Code image build fails.
+	for _, f := range container.BuildContextScripts() {
+		scriptPath := filepath.Join(dir, f.Name)
+		if err := os.WriteFile(scriptPath, f.Content, f.Mode); err != nil {
+			return fmt.Errorf("writing %s: %w", f.Name, err)
+		}
+		success("Saved " + scriptPath)
+	}
+
+	domains := strings.Join(append(container.BuiltinDomains(), cfg.AllowDomains...), "\n") + "\n"
+	domainsPath := filepath.Join(dir, "allowed-domains.txt")
+	if err := os.WriteFile(domainsPath, []byte(domains), 0o644); err != nil {
+		return fmt.Errorf("writing allowed-domains.txt: %w", err)
+	}
+	success("Saved " + domainsPath)
+
 	return nil
 }
 

@@ -153,6 +153,99 @@ func TestWriteDevContainer_WritesSeccompProfile(t *testing.T) {
 	}
 }
 
+// TestWriteDevContainer_WritesDockerfile locks in the VS Code portability
+// path: a sibling .devcontainer/Dockerfile must be written, built from
+// container.GenerateBaseDockerfile() (the same base bunker's native build
+// uses) plus a suffix that COPYs the allowlist and locks it down root-owned
+// + read-only, so a sandboxed agent cannot widen the firewall's allowlist.
+func TestWriteDevContainer_WritesDockerfile(t *testing.T) {
+	ws := t.TempDir()
+	if err := writeDevContainer(ws, config.ProjectConfig{}); err != nil {
+		t.Fatalf("writeDevContainer: %v", err)
+	}
+	p := filepath.Join(ws, ".devcontainer", "Dockerfile")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("Dockerfile missing: %v", err)
+	}
+	if !strings.HasPrefix(string(data), container.GenerateBaseDockerfile()) {
+		t.Error("Dockerfile must start with container.GenerateBaseDockerfile()")
+	}
+	wantCopy := "COPY allowed-domains.txt " + container.AllowedDomainsPath
+	if !strings.Contains(string(data), wantCopy) {
+		t.Errorf("Dockerfile missing %q", wantCopy)
+	}
+	wantChmod := "chmod 0444 " + container.AllowedDomainsPath
+	if !strings.Contains(string(data), wantChmod) {
+		t.Errorf("Dockerfile missing %q", wantChmod)
+	}
+}
+
+// TestWriteDevContainer_WritesFirewallScripts locks in that the 3 firewall
+// scripts written alongside the Dockerfile are byte-identical to bunker's
+// canonical container.BuildContextScripts() entries (no drift/copy-paste),
+// so the Dockerfile's COPY steps for them resolve.
+func TestWriteDevContainer_WritesFirewallScripts(t *testing.T) {
+	ws := t.TempDir()
+	if err := writeDevContainer(ws, config.ProjectConfig{}); err != nil {
+		t.Fatalf("writeDevContainer: %v", err)
+	}
+	canonical := make(map[string][]byte)
+	for _, f := range container.BuildContextScripts() {
+		canonical[f.Name] = f.Content
+	}
+	for _, name := range []string{"init-firewall.sh", "refresh-firewall.sh", "firewall-common.sh"} {
+		want, ok := canonical[name]
+		if !ok {
+			t.Fatalf("canonical BuildContextScripts() missing %s", name)
+		}
+		got, err := os.ReadFile(filepath.Join(ws, ".devcontainer", name))
+		if err != nil {
+			t.Fatalf("%s missing: %v", name, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("%s content diverges from container.BuildContextScripts()", name)
+		}
+	}
+}
+
+// TestWriteDevContainer_WritesAllowedDomains locks in that allowed-domains.txt
+// is derived from container.BuiltinDomains() (with no project AllowDomains,
+// it is exactly the builtins joined by newlines) — the file baked root-owned
+// into the Dockerfile.
+func TestWriteDevContainer_WritesAllowedDomains(t *testing.T) {
+	ws := t.TempDir()
+	if err := writeDevContainer(ws, config.ProjectConfig{}); err != nil {
+		t.Fatalf("writeDevContainer: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(ws, ".devcontainer", "allowed-domains.txt"))
+	if err != nil {
+		t.Fatalf("allowed-domains.txt missing: %v", err)
+	}
+	want := strings.Join(container.BuiltinDomains(), "\n") + "\n"
+	if string(data) != want {
+		t.Errorf("allowed-domains.txt = %q, want %q", data, want)
+	}
+}
+
+// TestWriteDevContainer_AllowedDomainsIncludesExtraDomains verifies the
+// project's extra allowDomains are appended after the builtins.
+func TestWriteDevContainer_AllowedDomainsIncludesExtraDomains(t *testing.T) {
+	ws := t.TempDir()
+	cfg := config.ProjectConfig{AllowDomains: []string{"registry.npmjs.org", "pypi.org"}}
+	if err := writeDevContainer(ws, cfg); err != nil {
+		t.Fatalf("writeDevContainer: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(ws, ".devcontainer", "allowed-domains.txt"))
+	if err != nil {
+		t.Fatalf("allowed-domains.txt missing: %v", err)
+	}
+	want := strings.Join(append(container.BuiltinDomains(), "registry.npmjs.org", "pypi.org"), "\n") + "\n"
+	if string(data) != want {
+		t.Errorf("allowed-domains.txt = %q, want %q", data, want)
+	}
+}
+
 func TestWriteDevContainer_DryRunPlansWithoutWriting(t *testing.T) {
 	ws := t.TempDir()
 
