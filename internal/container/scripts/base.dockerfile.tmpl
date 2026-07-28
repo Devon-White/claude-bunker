@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   openssh-client \
   ripgrep \
   socat \
+  sudo \
   tmux \
   && apt-get clean && rm -rf /var/lib/apt/lists/* \
   && update-alternatives --set iptables /usr/sbin/iptables-legacy
@@ -66,3 +67,10 @@ COPY refresh-firewall.sh {{.RefreshFirewallPath}}
 COPY tmux.conf {{.Home}}/.tmux.conf
 RUN chmod +x {{.CommonFirewallPath}} {{.FirewallPath}} {{.RefreshFirewallPath}} && \
   chown {{.User}}:{{.User}} {{.Home}}/.tmux.conf
+
+# Scoped NOPASSWD sudo for exactly the firewall scripts — allows the VS Code
+# postStartCommand to run the firewall as the non-root user. bunker's native
+# build runs the firewall as root via docker-exec and never uses sudo, so
+# this grant is additive and harmless for that path.
+RUN echo '{{.User}} ALL=(root) NOPASSWD: {{.FirewallPath}}, {{.RefreshFirewallPath}}' > /etc/sudoers.d/claude-bunker-firewall && \
+  chmod 0440 /etc/sudoers.d/claude-bunker-firewall

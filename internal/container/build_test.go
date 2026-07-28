@@ -51,8 +51,11 @@ func TestGenerateBaseDockerfile_ContainsKeyElements(t *testing.T) {
 		}
 	}
 
-	// Verify removed packages are NOT in apt-get install
-	mustNotContain := []string{"wget", "nano", "sudo", "fzf", "aggregate", "jq", "zsh"}
+	// Verify removed packages are NOT in apt-get install.
+	// Note: sudo is intentionally installed (scoped NOPASSWD grant for the
+	// firewall scripts, see TestGenerateBaseDockerfile_ScopedSudoersGrant),
+	// so it is deliberately excluded from this list.
+	mustNotContain := []string{"wget", "nano", "fzf", "aggregate", "jq", "zsh"}
 	for _, pkg := range mustNotContain {
 		// Check that the package doesn't appear as a standalone line in apt-get install
 		if strings.Contains(df, "  "+pkg+" \\") || strings.Contains(df, "  "+pkg+"\n") {
@@ -76,9 +79,9 @@ func TestGenerateBaseDockerfile_ContainsKeyElements(t *testing.T) {
 	if strings.Contains(df, "git-delta") || strings.Contains(df, "GIT_DELTA_VERSION") {
 		t.Error("Dockerfile should not contain git-delta references")
 	}
-	if strings.Contains(df, "sudoers") {
-		t.Error("Dockerfile should not contain sudoers references")
-	}
+	// A scoped NOPASSWD sudoers grant for the firewall scripts is expected;
+	// see TestGenerateBaseDockerfile_ScopedSudoersGrant for the exact-content
+	// and non-blanket-sudo assertions.
 }
 
 func TestGenerateBaseDockerfile_TZAfterAptGet(t *testing.T) {
