@@ -18,6 +18,7 @@ var bunkerManagedFeaturePrefixes = []string{
 	"ghcr.io/anthropics/devcontainer-features/claude-code",
 	"ghcr.io/Devon-White/claude-bunker/firewall",
 	"ghcr.io/Devon-White/claude-bunker/hardening",
+	"ghcr.io/devcontainers/features/common-utils",
 }
 
 // DevContainerPath returns the standard devcontainer.json path for a workspace.

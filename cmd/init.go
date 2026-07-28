@@ -579,11 +579,12 @@ func mergeSettings(cfg map[string]any, s initSettings) {
 func writeDevContainer(workspace string, cfg config.ProjectConfig) error {
 	name := filepath.Base(workspace) + " (bunkered)"
 	data, err := devcontainer.Generate(cfg, devcontainer.GenerateOpts{
-		Name:              name,
-		Image:             "mcr.microsoft.com/devcontainers/base:debian",
-		ClaudeCodeFeature: "ghcr.io/anthropics/devcontainer-features/claude-code:1",
-		FirewallFeature:   "ghcr.io/Devon-White/claude-bunker/firewall:0",
-		HardeningFeature:  "ghcr.io/Devon-White/claude-bunker/hardening:0",
+		Name:               name,
+		Image:              "mcr.microsoft.com/devcontainers/base:debian",
+		ClaudeCodeFeature:  "ghcr.io/anthropics/devcontainer-features/claude-code:1",
+		FirewallFeature:    "ghcr.io/Devon-White/claude-bunker/firewall:0",
+		HardeningFeature:   "ghcr.io/Devon-White/claude-bunker/hardening:0",
+		CommonUtilsFeature: "ghcr.io/devcontainers/features/common-utils:2",
 	})
 	if err != nil {
 		return fmt.Errorf("generating devcontainer.json: %w", err)

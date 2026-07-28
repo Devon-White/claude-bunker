@@ -137,6 +137,48 @@ func TestGenerate_FirewallHardeningFeaturesAndRunArgs(t *testing.T) {
 	}
 }
 
+// TestGenerate_CommonUtilsFeature locks in the VS Code user-resolution fix:
+// when CommonUtilsFeature is set, it lands in the features map configured to
+// create the claude-bunker user (uid/gid 1000, matching bunker's native base
+// image user) so remoteUser: claude-bunker actually resolves on the VS
+// Code / Codespaces path, and the created user gets passwordless sudo (which
+// the firewall Feature's postStart needs).
+func TestGenerate_CommonUtilsFeature(t *testing.T) {
+	data, err := Generate(config.ProjectConfig{}, GenerateOpts{
+		CommonUtilsFeature: "ghcr.io/devcontainers/features/common-utils:2",
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	body := data
+	if nl := bytes.IndexByte(body, '\n'); nl >= 0 {
+		body = body[nl+1:]
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("generated file is not valid JSON: %v", err)
+	}
+
+	features, ok := raw["features"].(map[string]any)
+	if !ok {
+		t.Fatalf("features missing or wrong type: %+v", raw["features"])
+	}
+	cu, ok := features["ghcr.io/devcontainers/features/common-utils:2"].(map[string]any)
+	if !ok {
+		t.Fatalf("common-utils feature ref missing: %+v", features)
+	}
+	if cu["username"] != "claude-bunker" {
+		t.Errorf("common-utils username = %v, want claude-bunker", cu["username"])
+	}
+	if cu["userUid"] != "1000" {
+		t.Errorf("common-utils userUid = %v, want 1000", cu["userUid"])
+	}
+	if cu["userGid"] != "1000" {
+		t.Errorf("common-utils userGid = %v, want 1000", cu["userGid"])
+	}
+}
+
 // TestGenerate_FirewallFeatureNoAllowDomains confirms the firewall feature's
 // options object is empty (not carrying an empty-string allowDomains) when no
 // allowlist is configured, matching the "only include the option if
